@@ -72,12 +72,12 @@ async function main() {
   console.log(`🌐 Network Chain ID: ${chainId} ${chainId === 31337 ? '(Local Hardhat)' : ''}`);
 
   // Deploy the paymaster contract
-  console.log('\n📦 Deploying PrepaidGasPaymaster on Base Sepolia...');
+  console.log('\n📦 Deploying GasLimitedPaymaster on Base Sepolia...');
   const SEMAPHORE_VERIFIER = '0x6C42599435B82121794D835263C846384869502d';
   const POSEIDON_T3 = '0xB43122Ecb241DD50062641f089876679fd06599a';
 
   const paymaster = await hre.viem.deployContract(
-    'PrepaidGasPaymaster',
+    'GasLimitedPaymaster',
     [entryPoint07Address, SEMAPHORE_VERIFIER],
     {
       libraries: {
@@ -96,7 +96,7 @@ async function main() {
   const joiningFee = parseEther('0.05'); // Higher fee for multiple operations
 
   try {
-    const createGroupTxHash = await paymaster.write.createGroup([joiningFee]);
+    const createGroupTxHash = await paymaster.write.createPool([joiningFee]);
     await trackTransactionCost(createGroupTxHash, 'Group Creation', publicClient);
 
     console.log(
@@ -107,7 +107,7 @@ async function main() {
     return;
   }
 
-  groupId = 0n; // First group has ID 0
+  groupId = 1n; // First group has ID 1 (poolCounter starts from 0, first pool gets ID 1)
 
   // Add all identities to group in batch
   console.log('\n🔗 Adding all identities to group...');
@@ -229,8 +229,7 @@ async function main() {
       );
 
       // Check nullifier gas usage after operation
-      const nullifierData = await paymaster.read.userGasData([nullifier]);
-      const nullifierGasUsed = nullifierData[0];
+      const nullifierGasUsed = await paymaster.read.poolMembersGasData([nullifier]);
       console.log(`🔑 Nullifier (${nullifier}) gas used: ${nullifierGasUsed} wei`);
       console.log(
         `📊 Gas used this operation: ${parseFloat(nullifierGasUsed.toString()) / 1e18} ETH`
@@ -310,8 +309,7 @@ async function main() {
   console.log(`\n🔑 Remaining Gas Allowances:`);
   for (let i = 0; i < nullifiers.length; i++) {
     const nullifier = nullifiers[i];
-    const nullifierData = await paymaster.read.userGasData([nullifier]);
-    const gasUsed = nullifierData[0];
+    const gasUsed = await paymaster.read.poolMembersGasData([nullifier]);
     const remaining = joiningFee - gasUsed;
     console.log(`  Identity ${i + 1} (Nullifier: ${nullifier}):`);
     console.log(`    Used: ${parseFloat(gasUsed.toString()) / 1e18} ETH`);
@@ -399,13 +397,13 @@ async function executeUserOperation(
   console.log(`🔑 Generated nullifier: ${semaphoreProof.nullifier}`);
 
   // Build paymaster data with size validation
-  const paymasterData = await generatePaymasterData(groupId, semaphoreProof);
+  const paymasterData = await generatePaymasterData(groupId, semaphoreProof, paymaster);
   userOperation.paymasterData = paymasterData;
 
   console.log(`📦 Paymaster data built (${paymasterData.length / 2 - 1} bytes)`);
 
   // Verify expected paymaster data size
-  const expectedSize = 448; // 32 + 416
+  const expectedSize = 480; // 32 (config) + 32 (poolId) + 416 (proof)
   const actualSize = paymasterData.length / 2 - 1;
   if (actualSize !== expectedSize) {
     throw new Error(`Wrong paymaster data size: ${actualSize} (expected ${expectedSize})`);
@@ -427,7 +425,7 @@ async function executeUserOperation(
   console.log(`🎯 Target contract exists: ${targetCode ? 'YES' : 'NO'}`);
 
   // Verify proof validation
-  const isValidProof = await paymaster.read.verifyProof([groupId, semaphoreProof]);
+  const isValidProof = await paymaster.read.verifyProof([semaphoreProof]);
   if (!isValidProof) {
     throw new Error('Proof validation failed!');
   }
@@ -524,8 +522,18 @@ async function generatePaymasterData(
     message: bigint;
     scope: bigint;
     points: readonly [bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint];
-  }
+  },
+  paymaster: any
 ): Promise<Hex> {
+  // Get latest valid root info for proper merkle root index
+  const latestRootInfo = await paymaster.read.getLatestValidRootInfo([groupId]);
+  const merkleRootIndex = latestRootInfo[1]; // Use the actual root index
+  
+  // Config: merkleRootIndex (32 bits) + mode (32 bits, 0 = VALIDATION) + 28 bytes reserved  
+  const config = BigInt(merkleRootIndex) | (BigInt(0) << 32n); // mode = 0 for VALIDATION
+  const configBytes = encodeAbiParameters([{ type: 'uint256' }], [config]);
+  console.log(`📏 Config bytes length: ${configBytes.length / 2 - 1}`); // Should be 32
+
   // Encode group ID (32 bytes)
   const groupIdBytes = encodeAbiParameters([{ type: 'uint256' }], [groupId]);
   console.log(`📏 GroupId bytes length: ${groupIdBytes.length / 2 - 1}`); // Should be 32
@@ -550,9 +558,9 @@ async function generatePaymasterData(
   );
   console.log(`📏 Proof bytes length: ${proofBytes.length / 2 - 1}`); // Should be 416
 
-  // Combine: groupId + proof (remove 0x prefix from proofBytes)
-  const result = (groupIdBytes + proofBytes.slice(2)) as Hex;
-  console.log(`📏 Total paymaster data length: ${result.length / 2 - 1}`); // Should be 448
+  // Combine: config + groupId + proof (remove 0x prefix from subsequent bytes)
+  const result = (configBytes + groupIdBytes.slice(2) + proofBytes.slice(2)) as Hex;
+  console.log(`📏 Total paymaster data length: ${result.length / 2 - 1}`); // Should be 480
 
   return result;
 }

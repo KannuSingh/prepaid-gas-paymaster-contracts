@@ -312,7 +312,8 @@ async function generatePaymasterData(
     points: [bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint];
   }
 ): Promise<Hex> {
-  const config = BigInt(merkleRootIndex) | (BigInt(0) << 32n);
+  // Config: merkleRootIndex (32 bits) + mode (32 bits, 0 = VALIDATION) + 28 bytes reserved
+  const config = BigInt(merkleRootIndex) | (BigInt(0) << 32n); // mode = 0 for VALIDATION
   const configBytes = numberToHex(config, { size: 32 });
   const poolIdBytes = encodeAbiParameters([{ type: 'uint256' }], [poolId]);
   const proofBytes = encodeAbiParameters(

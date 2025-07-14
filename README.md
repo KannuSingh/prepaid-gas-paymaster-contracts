@@ -19,17 +19,22 @@ The Prepaid Gas Paymaster enables users to pay for gas fees anonymously using ze
 
 ### Core Components
 
-1. **PrepaidGasPaymaster**: Main contract implementing the paymaster logic
-2. **SemaphoreGroupManager**: Manages Semaphore groups and member operations
-3. **BasePaymaster**: Base paymaster functionality from Account Abstraction
-4. **ISemaphoreGasManager**: Interface defining the gas management functions
+1. **GasLimitedPaymaster**: Paymaster with multi-use gas credits per pool member
+2. **OneTimeUsePaymaster**: Paymaster with single-use gas credits per nullifier
+3. **PrepaidGasPoolManager**: Manages privacy pools using Lean Incremental Merkle Trees
+4. **BasePaymaster**: Base paymaster functionality from Account Abstraction (ERC-4337)
 
 ### Smart Contract Structure
 
 ```
-PrepaidGasPaymaster
-├── Group Management
-│   ├── createGroup()
+BasePaymaster (ERC-4337 implementation)
+└── PrepaidGasPoolManager (privacy pool management)
+    ├── GasLimitedPaymaster (multi-use with gas limits)
+    └── OneTimeUsePaymaster (single-use with nullifier tracking)
+
+Key Functions:
+├── Pool Management
+│   ├── createPool()
 │   ├── addMember()
 │   └── addMembers()
 ├── Proof Validation
@@ -39,8 +44,8 @@ PrepaidGasPaymaster
 │   ├── _validatePaymasterUserOp()
 │   └── _postOp()
 └── Utilities
-    ├── _getMessageHash()
-    └── _hash()
+    ├── getMessageHash()
+    └── getPaymasterStubData()
 ```
 
 ## Installation
@@ -54,56 +59,69 @@ npm install
 ### Prerequisites
 
 - Node.js 18+
-- Hardhat
-- Viem
-- Semaphore Protocol
 - Docker and Docker Compose
+- Git
 
-### Environment Setup
+### Quick Start
 
-Create a `.env` file with the following variables:
+1. **Clone and Install**
+   ```bash
+   git clone <repository-url>
+   cd prepaid-gas-paymaster-contracts
+   npm install
+   ```
 
-```env
-PRIVATE_KEY=your_private_key
-INFURA_API_KEY=your_infura_api_key
-ETHERSCAN_API_KEY=your_etherscan_api_key
+2. **Environment Setup** (Optional for local development)
+   ```bash
+   # Create .env file for testnet deployment only
+   PRIVATE_KEY=your_private_key
+   INFURA_API_KEY=your_infura_api_key
+   ETHERSCAN_API_KEY=your_etherscan_api_key
+   ```
+
+3. **Start Mock AA Environment**
+   ```bash
+   cd mock-aa-environment
+   docker compose up -d
+   cd ..
+   ```
+
+4. **Compile Contracts**
+   ```bash
+   npx hardhat compile
+   ```
+
+5. **Run Tests**
+   ```bash
+   npx hardhat test
+   ```
+
+6. **Run Integration Tests**
+   ```bash
+   npx hardhat run scripts/integration-test.ts --network dev
+   ```
+
+### Mock AA Environment Details
+
+The mock environment provides:
+- **Anvil**: Local blockchain (forked from Base Sepolia)
+- **Alto Bundler**: ERC-4337 bundler service on port 4337
+- **Pre-deployed contracts**: EntryPoint, Verifier, and dependencies
+
+Services:
+- Blockchain: `http://localhost:8545`
+- Bundler: `http://localhost:4337`
+
+### Deployment Options
+
+**Local Development:**
+```bash
+npx hardhat ignition deploy ignition/modules/PrepaidGasPaymaster.ts --network dev
 ```
 
-### Mock AA Environment Setup
-
-Before running scripts, you need to set up the mock Account Abstraction environment:
-
+**Base Sepolia Testnet:**
 ```bash
-# Navigate to the mock-aa-environment directory
-cd ../mock-aa-environment
-
-# Start the mock AA environment
-docker compose up -d
-
-# Verify the services are running
-docker compose ps
-```
-
-This will start:
-- Mock bundler service
-- Local blockchain node
-
-### Compilation
-
-```bash
-npx hardhat compile
-```
-
-### Testing
-
-```bash
-npx hardhat test
-```
-
-### Deployment
-
-```bash
-npx hardhat run scripts/deploy.ts --network <network>
+npx hardhat ignition deploy ignition/modules/PrepaidGasPaymaster.ts --network baseSepolia
 ```
 
 ## Usage
@@ -112,7 +130,7 @@ npx hardhat run scripts/deploy.ts --network <network>
 
 ```typescript
 const paymaster = await hre.viem.deployContract(
-  'PrepaidGasPaymaster',
+  'GasLimitedPaymaster',
   [entryPoint07Address, SEMAPHORE_VERIFIER],
   {
     libraries: {
@@ -122,22 +140,22 @@ const paymaster = await hre.viem.deployContract(
 );
 ```
 
-### 2. Create a Group
+### 2. Create a Pool
 
 ```typescript
 const joiningFee = parseEther('0.01');
-await paymaster.write.createGroup([joiningFee]);
+await paymaster.write.createPool([joiningFee]);
 ```
 
-### 3. Add Members to Group
+### 3. Add Members to Pool
 
 ```typescript
 // Generate identity from signature
 const sig = await wallet.signMessage({ message: 'My Identity' });
 const identity = new Identity(sig);
 
-// Add member to group
-await paymaster.write.addMember([groupId, identity.commitment], {
+// Add member to pool
+await paymaster.write.addMember([poolId, identity.commitment], {
   value: joiningFee,
 });
 ```
@@ -146,29 +164,28 @@ await paymaster.write.addMember([groupId, identity.commitment], {
 
 ```typescript
 // Generate Semaphore proof
-const proof = await generateProof(identity, testGroup, message, groupId);
+const proof = await generateProof(identity, testGroup, message, poolId);
 
 // Create user operation with paymaster data
 const userOperation = {
   // ... user operation fields
   paymaster: paymaster.address,
-  paymasterData: generatePaymasterData(groupId, proof),
+  paymasterData: generatePaymasterData(poolId, proof),
 };
 ```
 
 ## Contract Functions
 
-### Group Management
+### Pool Management
 
-- `createGroup(uint256 joiningFee)`: Create a new group with joining fee
-- `createGroup(uint256 joiningFee, uint256 merkleTreeDuration)`: Create group with custom duration
-- `addMember(uint256 groupId, uint256 identityCommitment)`: Add single member
-- `addMembers(uint256 groupId, uint256[] identityCommitments)`: Add multiple members
+- `createPool(uint256 joiningFee)`: Create a new pool with joining fee
+- `addMember(uint256 poolId, uint256 identityCommitment)`: Add single member
+- `addMembers(uint256 poolId, uint256[] identityCommitments)`: Add multiple members
 
 ### Proof Validation
 
-- `verifyProof(uint256 groupId, SemaphoreProof proof)`: Verify a Semaphore proof
-- `_validateProof(uint256 groupId, SemaphoreProof proof)`: Internal proof validation
+- `verifyProof(DataLib.PoolMembershipProof calldata proof)`: Verify a Semaphore proof
+- `_validateProof(DataLib.PoolMembershipProof memory proof)`: Internal proof validation
 
 ### Paymaster Operations
 
@@ -245,22 +262,28 @@ npm test
 
 **Note**: Before running any scripts, make sure the mock AA environment is running:
 ```bash
-cd ../mock-aa-environment && docker compose up -d
+cd mock-aa-environment && docker compose up -d
 ```
 
-### End-to-End Demo
+### Integration Test (Multi-Wallet Validation)
+Tests comprehensive multi-wallet scenarios with 3 different identities, unique smart accounts, and detailed validation checks. Best for verifying real-world usage patterns.
+
 ```bash
-npx hardhat run scripts/anonymous-paymaster-e2e.ts
+npx hardhat run scripts/integration-test.ts --network dev
 ```
 
-### Multi-Identity Demo
+### Stress Test (Performance & High Volume)
+Runs 100 sequential transactions with performance metrics and proof generation timing. Best for testing system performance and gas optimization.
+
 ```bash
-npx hardhat run scripts/multi-identity-e2e.ts
+npx hardhat run scripts/stress-test.ts --network dev
 ```
 
-### Group Creation
+### Pool Creation
+Creates multiple pools with different joining fee tiers for testing various scenarios.
+
 ```bash
-npx hardhat run scripts/create-groups.ts
+npx hardhat run tasks/create-pools.ts
 ```
 
 ## Dependencies

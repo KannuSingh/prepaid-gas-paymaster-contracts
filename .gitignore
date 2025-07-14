@@ -31,3 +31,6 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+#AI
+CLAUDE.md
