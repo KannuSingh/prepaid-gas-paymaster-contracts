@@ -1,0 +1,31 @@
+{
+  "name": "prepaid-gas-paymaster-contracts",
+  "description": "Prepaid gas paymaster contracts",
+  "version": "1.0.0",
+  "author": {
+    "name": "Karandeep Singh"
+  },
+  "devDependencies": {
+    "@nomicfoundation/hardhat-toolbox-viem": "^3.0.0",
+    "@nomicfoundation/hardhat-verify": "^2.0.14",
+    "@types/minimist": "^1.2.5",
+    "hardhat": "^2.24.1",
+    "hardhat-spdx-license-identifier": "^2.3.1",
+    "prettier": "^3.5.3",
+    "prettier-plugin-solidity": "^2.0.0"
+  },
+  "dependencies": {
+    "@account-abstraction/contracts": "0.7.0",
+    "@semaphore-protocol/contracts": "4.8.2",
+    "@semaphore-protocol/core": "^4.11.1",
+    "dotenv": "^16.5.0",
+    "graphql-request": "^7.2.0",
+    "minimist": "^1.2.8",
+    "permissionless": "0.2.0",
+    "poseidon-lite": "^0.3.0"
+  },
+  "scripts": {
+    "format": "prettier --write \"**/*.{js,ts,json,sol,md}\"",
+    "check-format": "prettier --check \"**/*.{js,ts,json,sol,md}\""
+  }
+}

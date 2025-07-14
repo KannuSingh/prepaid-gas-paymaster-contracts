@@ -1,0 +1,41 @@
+services:
+  anvil:
+    image: ghcr.io/foundry-rs/foundry:nightly-776897b169e17117be345bf4a226e093ca768c17
+    ports: [ "8545:8545" ]
+    # entrypoint: [ "anvil", "--host", "0.0.0.0", "--block-time", "0.1", "--silent", "--hardfork", "prague"]
+    # Uncomment this if you want to use a fork
+    entrypoint: [ "anvil", "--chain-id", "1", "--fork-url", "https://sepolia.base.org", "--host", "0.0.0.0", "--block-time", "1", "--tracing", "-vvvv"]
+    platform: linux/amd64
+    healthcheck:
+      test: ["CMD-SHELL", "cast rpc web3_clientVersion | grep -c anvil > /dev/null "]
+      start_interval: 250ms
+      start_period: 10s
+      interval: 30s
+      timeout: 5s
+      retries: 50
+
+  alto:
+    build: https://github.com/pimlicolabs/alto.git
+    ports: [ "4337:4337" ]
+    environment:
+      - ANVIL_RPC=http://anvil:8545
+    depends_on:
+      anvil:
+        condition: service_healthy
+      contract-deployer:
+        condition: service_completed_successfully
+    volumes:
+      - ./mock-alto-bundler/alto-config.json:/app/alto-config.json
+    entrypoint: ["node", "src/esm/cli/alto.js", "run", "--config", "/app/alto-config.json"]
+
+  contract-deployer:
+    build:
+      context: ./mock-contract-deployer
+      dockerfile: Dockerfile
+    environment:
+      - ANVIL_RPC=http://anvil:8545
+      # Uncomment this if you want to use the forked version
+      - SKIP_DEPLOYMENTS=true
+    depends_on:
+      anvil:
+        condition: service_healthy
