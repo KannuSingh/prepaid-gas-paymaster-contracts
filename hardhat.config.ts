@@ -10,39 +10,48 @@ import './tasks/create-pools';
 dotenvConfig({ path: resolve(__dirname, './.env') });
 
 const etherscanApiKey = process.env.ETHERSCAN_API_KEY;
+
 function getNetworks(): NetworksUserConfig {
+  const networks: NetworksUserConfig = {
+    dev: {
+      url: 'http://localhost:8545',
+      chainId: 1, // Standard Hardhat Network chainId
+      // accounts: You can omit accounts for local development if not using specific private keys,
+      // as Hardhat's built-in accounts will be used by default.
+    },
+    localhost: {
+      // Adding an explicit localhost entry, though 'dev' already points to it
+      url: 'http://localhost:8545',
+      chainId: 31337, // Common chainId for Hardhat Network
+      // accounts: Same as dev, can be omitted
+    },
+  };
+
   if (process.env.INFURA_API_KEY && process.env.PRIVATE_KEY) {
     const accounts = [`0x${process.env.PRIVATE_KEY}`];
-    return {
-      sepolia: {
-        url: `https://sepolia.infura.io/v3/${process.env.INFURA_API_KEY}`,
-        chainId: 11155111,
-        accounts,
-      },
-      baseSepolia: {
-        url: 'https://sepolia.base.org',
-        chainId: 84532,
-        accounts,
-      },
-      base: {
-        url: 'https://mainnet.base.org',
-        chainId: 8453,
-        accounts,
-      },
-      optimism: {
-        url: 'https://mainnet.optimism.io',
-        chainId: 10,
-        accounts,
-      },
-      dev: {
-        url: 'http://localhost:8545',
-        chainId: 1,
-        // accounts
-      },
+    networks.sepolia = {
+      url: `https://sepolia.infura.io/v3/${process.env.INFURA_API_KEY}`,
+      chainId: 11155111,
+      accounts,
+    };
+    networks.baseSepolia = {
+      url: 'https://sepolia.base.org',
+      chainId: 84532,
+      accounts,
+    };
+    networks.base = {
+      url: 'https://mainnet.base.org',
+      chainId: 8453,
+      accounts,
+    };
+    networks.optimism = {
+      url: 'https://mainnet.optimism.io',
+      chainId: 10,
+      accounts,
     };
   }
 
-  return {};
+  return networks;
 }
 const config: HardhatUserConfig = {
   solidity: {
@@ -52,7 +61,6 @@ const config: HardhatUserConfig = {
         version: '0.8.24',
         settings: {
           optimizer: { enabled: true, runs: 200 },
-          // viaIR: true,
         },
       },
     ],

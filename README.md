@@ -48,14 +48,6 @@ Key Functions:
     └── getPaymasterStubData()
 ```
 
-## Installation
-
-```bash
-npm install
-```
-
-## Development
-
 ### Prerequisites
 
 - Node.js 18+
@@ -91,12 +83,7 @@ npm install
    npx hardhat compile
    ```
 
-5. **Run Tests**
-   ```bash
-   npx hardhat test
-   ```
-
-6. **Run Integration Tests**
+5. **Run Integration Tests**
    ```bash
    npx hardhat run scripts/integration-test.ts --network dev
    ```
@@ -124,139 +111,9 @@ npx hardhat ignition deploy ignition/modules/PrepaidGasPaymaster.ts --network de
 npx hardhat ignition deploy ignition/modules/PrepaidGasPaymaster.ts --network baseSepolia
 ```
 
-## Usage
+## Networks Deployed
 
-### 1. Deploy the Paymaster
-
-```typescript
-const paymaster = await hre.viem.deployContract(
-  'GasLimitedPaymaster',
-  [entryPoint07Address, SEMAPHORE_VERIFIER],
-  {
-    libraries: {
-      PoseidonT3: POSEIDON_T3,
-    },
-  }
-);
-```
-
-### 2. Create a Pool
-
-```typescript
-const joiningFee = parseEther('0.01');
-await paymaster.write.createPool([joiningFee]);
-```
-
-### 3. Add Members to Pool
-
-```typescript
-// Generate identity from signature
-const sig = await wallet.signMessage({ message: 'My Identity' });
-const identity = new Identity(sig);
-
-// Add member to pool
-await paymaster.write.addMember([poolId, identity.commitment], {
-  value: joiningFee,
-});
-```
-
-### 4. Generate and Use Proof
-
-```typescript
-// Generate Semaphore proof
-const proof = await generateProof(identity, testGroup, message, poolId);
-
-// Create user operation with paymaster data
-const userOperation = {
-  // ... user operation fields
-  paymaster: paymaster.address,
-  paymasterData: generatePaymasterData(poolId, proof),
-};
-```
-
-## Contract Functions
-
-### Pool Management
-
-- `createPool(uint256 joiningFee)`: Create a new pool with joining fee
-- `addMember(uint256 poolId, uint256 identityCommitment)`: Add single member
-- `addMembers(uint256 poolId, uint256[] identityCommitments)`: Add multiple members
-
-### Proof Validation
-
-- `verifyProof(DataLib.PoolMembershipProof calldata proof)`: Verify a Semaphore proof
-- `_validateProof(DataLib.PoolMembershipProof memory proof)`: Internal proof validation
-
-### Paymaster Operations
-
-- `_validatePaymasterUserOp()`: Validate user operation with Semaphore proof
-- `_postOp()`: Post-operation processing and gas deduction
-
-## Data Structures
-
-### GroupConfig
-```solidity
-struct GroupConfig {
-    uint256 merkleTreeDuration;
-    uint256 joiningFee;
-    uint256 totalDeposits;
-    mapping(uint256 => uint256) merkleRootCreationDates;
-}
-```
-
-### SemaphoreProof
-```solidity
-struct SemaphoreProof {
-    uint256 merkleTreeDepth;
-    uint256 merkleTreeRoot;
-    uint256 nullifier;
-    uint256 message;
-    uint256 scope;
-    uint256[8] points;
-}
-```
-
-### UserGasData
-```solidity
-struct UserGasData {
-    uint256 gasUsed;
-    uint256 lastMerkleRoot;
-}
-```
-
-## Security Features
-
-- **Nullifier Tracking**: Prevents double-spending of gas credits
-- **Group Balance Checks**: Ensures sufficient funds for gas payments
-- **Proof Validation**: Cryptographic verification of user membership
-- **Gas Allowance Limits**: Per-user gas spending limits
-- **Merkle Root Expiration**: Time-based validity of group states
-
-## Networks Supported
-
-- Ethereum Mainnet
-- Base
 - Base Sepolia
-- Optimism
-- Sepolia
-- Local Development
-
-## Testing
-
-The project includes comprehensive tests covering:
-
-- Contract deployment
-- Group creation and management
-- Member addition and updates
-- Proof generation and validation
-- Paymaster operations
-- Gas tracking and limits
-- Error conditions and edge cases
-
-Run tests with:
-```bash
-npm test
-```
 
 ## Scripts
 
@@ -265,18 +122,10 @@ npm test
 cd mock-aa-environment && docker compose up -d
 ```
 
-### Integration Test (Multi-Wallet Validation)
-Tests comprehensive multi-wallet scenarios with 3 different identities, unique smart accounts, and detailed validation checks. Best for verifying real-world usage patterns.
+### Integration Test
 
 ```bash
 npx hardhat run scripts/integration-test.ts --network dev
-```
-
-### Stress Test (Performance & High Volume)
-Runs 100 sequential transactions with performance metrics and proof generation timing. Best for testing system performance and gas optimization.
-
-```bash
-npx hardhat run scripts/stress-test.ts --network dev
 ```
 
 ### Pool Creation
