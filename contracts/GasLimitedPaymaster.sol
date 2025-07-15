@@ -229,8 +229,12 @@ contract GasLimitedPaymaster is BasePaymaster, PrepaidGasPoolManager {
             );
         }
 
-        // === 6. Check if joining fee is sufficient for the transaction ===
-        if (pool.joiningFee < requiredPreFund && isValidationMode) {
+        // === 6. Check if remaining joining fee is sufficient for the transaction ===
+        if (
+            (pool.joiningFee - poolMembersGasData[proof.nullifier]) <
+            requiredPreFund &&
+            isValidationMode
+        ) {
             revert PaymasterValidationErrors.UserExceededGasFund();
         }
 
