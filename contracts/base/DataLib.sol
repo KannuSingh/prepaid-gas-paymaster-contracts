@@ -342,4 +342,43 @@ library DataLib {
                 )
             );
     }
+
+    /// @notice Generate cached stub data for gas estimation with pre-computed nullifier range
+    /// @param poolId The pool ID
+    /// @return stubData Encoded cached stub data in ESTIMATION mode
+    function generateCachedStubData(
+        uint256 poolId
+    ) internal pure returns (bytes memory stubData) {
+        // Format: poolId + mode + startIndex + endIndex
+        return
+            abi.encodePacked(
+                poolId, // 32 bytes
+                Constants.PaymasterMode.ESTIMATION,
+                uint8(0),
+                uint8(Constants.MAX_NULLIFIERS_PER_ADDRESS - 1)
+            );
+    }
+
+    // Add to DataLib.sol
+    /// @notice Pack two uint8 indices into a single uint256
+    /// @param startIndex The start index (0-7)
+    /// @param endIndex The end index (0-7)
+    /// @return packed The packed indices as uint256
+    function packIndices(
+        uint8 startIndex,
+        uint8 endIndex
+    ) internal pure returns (uint256 packed) {
+        return (uint256(startIndex) << 8) | uint256(endIndex);
+    }
+
+    /// @notice Unpack two uint8 indices from a uint256
+    /// @param packed The packed indices
+    /// @return startIndex The start index
+    /// @return endIndex The end index
+    function unpackIndices(
+        uint256 packed
+    ) internal pure returns (uint8 startIndex, uint8 endIndex) {
+        startIndex = uint8(packed >> 8);
+        endIndex = uint8(packed & 0xFF);
+    }
 }
