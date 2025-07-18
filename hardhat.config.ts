@@ -1,11 +1,12 @@
 import { HardhatUserConfig } from 'hardhat/config';
 import '@nomicfoundation/hardhat-toolbox-viem';
-import '@nomicfoundation/hardhat-ignition-viem';
+// import '@nomicfoundation/hardhat-ignition-viem';
 import '@nomicfoundation/hardhat-verify';
+import '@nomicfoundation/hardhat-foundry';
 import { NetworksUserConfig } from 'hardhat/types';
 import { config as dotenvConfig } from 'dotenv';
 import { resolve } from 'path';
-import './tasks/create-pools';
+// import './tasks/create-pools';
 
 dotenvConfig({ path: resolve(__dirname, './.env') });
 
