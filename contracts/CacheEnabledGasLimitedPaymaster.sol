@@ -25,8 +25,8 @@ contract CacheEnabledGasLimitedPaymaster is
 
     /// @notice User's nullifier management state
     struct UserNullifierState {
-        uint256[8] nullifiers; // Fixed array of activated nullifiers
-        uint8 count; // Active nullifiers count (with remaining balance)
+        uint256[2] nullifiers; // Fixed array of activated nullifiers
+        uint8 activatedNullifierCount; // Active nullifiers count (with remaining balance)
         uint8 exhaustedSlotIndex; // Last exhausted slot index (available for reuse)
         bool hasAvailableExhaustedSlot; // Whether we have an exhausted slot available for reuse
     }
@@ -44,14 +44,10 @@ contract CacheEnabledGasLimitedPaymaster is
     IPoolMembershipProofVerifier public immutable verifier;
 
     /// @notice User gas usage tracking per nullifier
-    mapping(uint256 => uint256) public poolMembersGasData;
+    mapping(uint256 => uint256) public nullifierGasUsage;
 
-    /// @notice Cache mapping: poolId => sender => nullifier(0 = not cached)
-    mapping(uint256 => mapping(address => uint256)) public cachedSenders;
-
-    /// @notice Cache mapping: poolId => sender => UserNullifierState
-    mapping(uint256 => mapping(address => UserNullifierState))
-        public userStates;
+    /// @notice Cache mapping: keccak(poolId,sender) => UserNullifierState
+    mapping(bytes32 => UserNullifierState) public userStates;
 
     // ============= Events ==============
 
@@ -257,10 +253,13 @@ contract CacheEnabledGasLimitedPaymaster is
         // Their failure will result in `VALIDATION_FAILED` (not a revert) during estimation mode,
         // allowing the bundler to proceed. In actual validation mode, these failures will revert. ===
 
-        UserNullifierState storage userState = userStates[poolId][sender];
+        UserNullifierState storage userState = userStates[
+            DataLib.getUserStateKey(poolId, sender)
+        ];
         // Only reject if array is full AND no exhausted slots available for reuse
         if (
-            userState.count >= Constants.MAX_NULLIFIERS_PER_ADDRESS &&
+            userState.activatedNullifierCount >=
+            Constants.MAX_NULLIFIERS_PER_ADDRESS &&
             !userState.hasAvailableExhaustedSlot &&
             isValidationMode
         ) {
@@ -285,7 +284,7 @@ contract CacheEnabledGasLimitedPaymaster is
 
         // === 6. Check if joining fee is sufficient for the transaction ===
         if (
-            (pool.joiningFee - poolMembersGasData[proof.nullifier]) <
+            (pool.joiningFee - nullifierGasUsage[proof.nullifier]) <
             requiredPreFund &&
             isValidationMode
         ) {
@@ -369,27 +368,36 @@ contract CacheEnabledGasLimitedPaymaster is
         uint256 requiredPreFund
     ) internal virtual returns (bytes memory context, uint256 validationData) {
         address sender = userOp.getSender();
-
         // === 2. Extract poolId from cached data (just poolId, no ZK proof) ===
         // Decode cached paymaster data: poolId + mode + startIndex + endIndex
-        (
-            uint256 poolId,
-            Constants.PaymasterMode mode,
-            uint8 startIndex,
-            uint8 endIndex
-        ) = abi.decode(
-                userOp.paymasterAndData[52:],
-                (uint256, Constants.PaymasterMode, uint8, uint8)
-            );
+        bytes memory data = userOp.paymasterAndData[52:];
+        require(data.length >= 35, "Invalid packed paymaster data");
 
-        bool isValidationMode = mode == Constants.PaymasterMode.VALIDATION;
+        uint256 poolId;
+        uint8 mode;
+        uint8 startIndex;
+        uint8 endIndex;
+
+        assembly {
+            poolId := mload(add(data, 32))
+            mode := byte(0, mload(add(data, 33)))
+            startIndex := byte(0, mload(add(data, 34)))
+            endIndex := byte(0, mload(add(data, 35)))
+        }
+
+        bool isValidationMode = mode ==
+            uint8(Constants.PaymasterMode.VALIDATION);
+
         // === 3. Validate pool existence ===
         if (!poolExists[poolId]) {
             revert PoolErrors.PoolDoesNotExist(poolId);
         }
+
         // === 4. Get cached nullifier for this sender in this pool ===
-        UserNullifierState storage userState = userStates[poolId][sender];
-        if (userState.count == 0 && isValidationMode) {
+        UserNullifierState storage userState = userStates[
+            DataLib.getUserStateKey(poolId, sender)
+        ];
+        if (userState.activatedNullifierCount == 0 && isValidationMode) {
             revert PaymasterValidationErrors.SenderNotCached(sender, poolId);
         }
 
@@ -408,37 +416,13 @@ contract CacheEnabledGasLimitedPaymaster is
         if (getDeposit() < requiredPreFund && isValidationMode) {
             revert PaymasterValidationErrors.InsufficientPaymasterFund();
         }
-
         // === 7. Calculate total available gas in the specified range ===
-        uint256 totalAvailable = 0;
-        PoolConfig storage pool = pools[poolId];
-
-        // Handle round-robin wrapping correctly
-        uint8 currentIndex = startIndex;
-        do {
-            uint256 nullifier = userState.nullifiers[currentIndex];
-            // CRITICAL: Skip empty/invalid nullifiers (attack protection)
-            if (nullifier == 0) {
-                currentIndex =
-                    (currentIndex + 1) %
-                    Constants.MAX_NULLIFIERS_PER_ADDRESS;
-                continue;
-            }
-            uint256 used = poolMembersGasData[nullifier];
-            uint256 available = pool.joiningFee > used
-                ? pool.joiningFee - used
-                : 0;
-            totalAvailable += available;
-
-            // Move to next index with wrapping
-            currentIndex =
-                (currentIndex + 1) %
-                Constants.MAX_NULLIFIERS_PER_ADDRESS;
-        } while (
-            currentIndex !=
-                (endIndex + 1) % Constants.MAX_NULLIFIERS_PER_ADDRESS
+        uint256 totalAvailable = _calculateAvailableGas(
+            userState,
+            poolId,
+            startIndex,
+            endIndex
         );
-
         // === 8. Check if sufficient gas available ===
         if (totalAvailable < requiredPreFund && isValidationMode) {
             revert PaymasterValidationErrors.UserExceededGasFund();
@@ -473,6 +457,47 @@ contract CacheEnabledGasLimitedPaymaster is
         );
     }
 
+    /// @notice Calculate total available gas from cached nullifiers in a given range
+    /// @param userState The user's nullifier state
+    /// @param poolId The pool ID to get joining fee from
+    /// @param startIndex Starting index in the nullifier array (inclusive)
+    /// @param endIndex Ending index in the nullifier array (inclusive)
+    /// @return totalAvailable Total available gas across the specified range
+    function _calculateAvailableGas(
+        UserNullifierState storage userState,
+        uint256 poolId,
+        uint8 startIndex,
+        uint8 endIndex
+    ) internal view returns (uint256 totalAvailable) {
+        PoolConfig storage pool = pools[poolId];
+
+        // Handle round-robin wrapping correctly
+        uint8 currentIndex = startIndex;
+        do {
+            uint256 nullifier = userState.nullifiers[currentIndex];
+            // CRITICAL: Skip empty/invalid nullifiers (attack protection)
+            if (nullifier == 0) {
+                currentIndex =
+                    (currentIndex + 1) %
+                    Constants.MAX_NULLIFIERS_PER_ADDRESS;
+                continue;
+            }
+            uint256 used = nullifierGasUsage[nullifier];
+            uint256 available = pool.joiningFee > used
+                ? pool.joiningFee - used
+                : 0;
+            totalAvailable += available;
+
+            // Move to next index with wrapping
+            currentIndex =
+                (currentIndex + 1) %
+                Constants.MAX_NULLIFIERS_PER_ADDRESS;
+        } while (
+            currentIndex !=
+                (endIndex + 1) % Constants.MAX_NULLIFIERS_PER_ADDRESS
+        );
+    }
+
     /// @inheritdoc BasePaymaster
     /// @notice Post-operation processing: Deduct gas costs from the user's allowance and pool deposits.
     /// @dev This function is called by the EntryPoint after the UserOp's execution.
@@ -494,13 +519,12 @@ contract CacheEnabledGasLimitedPaymaster is
                 (NullifierMode, uint256, bytes32, uint256, address)
             );
 
-        // Calculate the total gas cost, including the EntryPoint's postOp overhead.
-        uint256 postOpGasCost = Constants.POSTOP_GAS_COST *
-            actualUserOpFeePerGas;
-        uint256 totalGasCost = actualGasCost + postOpGasCost;
-
         // 3. Handle based on nullifier mode
         if (mode == NullifierMode.ACTIVATION) {
+            // Calculate the total gas cost, including the EntryPoint's postOp overhead.
+            uint256 postOpGasCost = Constants.POSTOP_ACTIVATION_GAS_COST *
+                actualUserOpFeePerGas;
+            uint256 totalGasCost = actualGasCost + postOpGasCost;
             _handleActivationPostOp(
                 poolId,
                 nullifierOrNullifierIndices,
@@ -508,7 +532,14 @@ contract CacheEnabledGasLimitedPaymaster is
                 userOpHash,
                 sender
             );
+            // Deduct the gas cost from the pool's total deposits.
+            _reduceDeposits(poolId, totalGasCost); // This function (from PrepaidGasPoolManager) also emits PoolDepositsReduced.
+            // Deduct from the global tracker of user deposits for revenue calculation.
+            totalUsersDeposit -= totalGasCost;
         } else {
+            uint256 postOpGasCost = Constants.POSTOP_CACHE_GAS_COST *
+                actualUserOpFeePerGas;
+            uint256 totalGasCost = actualGasCost + postOpGasCost;
             _handleCachedPostOp(
                 poolId,
                 nullifierOrNullifierIndices,
@@ -516,13 +547,11 @@ contract CacheEnabledGasLimitedPaymaster is
                 userOpHash,
                 sender
             );
+            // Deduct the gas cost from the pool's total deposits.
+            _reduceDeposits(poolId, totalGasCost); // This function (from PrepaidGasPoolManager) also emits PoolDepositsReduced.
+            // Deduct from the global tracker of user deposits for revenue calculation.
+            totalUsersDeposit -= totalGasCost;
         }
-
-        // Deduct the gas cost from the pool's total deposits.
-        _reduceDeposits(poolId, totalGasCost); // This function (from PrepaidGasPoolManager) also emits PoolDepositsReduced.
-
-        // Deduct from the global tracker of user deposits for revenue calculation.
-        totalUsersDeposit -= totalGasCost;
     }
 
     /// @notice Handle cached postOp (cached transaction)
@@ -544,7 +573,9 @@ contract CacheEnabledGasLimitedPaymaster is
             nullifierIndices
         );
 
-        UserNullifierState storage userState = userStates[poolId][sender];
+        UserNullifierState storage userState = userStates[
+            DataLib.getUserStateKey(poolId, sender)
+        ];
         uint256 remainingCost = totalGasCost;
 
         // Consume gas sequentially with round-robin wrapping
@@ -562,19 +593,19 @@ contract CacheEnabledGasLimitedPaymaster is
                 continue;
             }
 
-            uint256 used = poolMembersGasData[nullifier];
+            uint256 used = nullifierGasUsage[nullifier];
             uint256 available = pools[poolId].joiningFee - used;
             uint256 toConsume = remainingCost > available
                 ? available
                 : remainingCost;
 
             // Deduct gas from this nullifier
-            poolMembersGasData[nullifier] += toConsume;
+            nullifierGasUsage[nullifier] += toConsume;
             remainingCost -= toConsume;
 
             // Check if this nullifier is now exhausted
-            if (poolMembersGasData[nullifier] >= pools[poolId].joiningFee) {
-                userState.count--; // Decrement active count
+            if (nullifierGasUsage[nullifier] >= pools[poolId].joiningFee) {
+                userState.activatedNullifierCount--; // Decrement active count
                 userState.exhaustedSlotIndex = currentIndex; // Mark as available for reuse
                 userState.hasAvailableExhaustedSlot = true; // Set flag
             }
@@ -613,10 +644,12 @@ contract CacheEnabledGasLimitedPaymaster is
         address sender
     ) internal {
         // 1. Deduct gas from the new nullifier
-        poolMembersGasData[nullifier] += totalGasCost;
+        nullifierGasUsage[nullifier] += totalGasCost;
 
         // 2. Add nullifier to user's activated list
-        UserNullifierState storage userState = userStates[poolId][sender];
+        UserNullifierState storage userState = userStates[
+            DataLib.getUserStateKey(poolId, sender)
+        ];
 
         if (userState.hasAvailableExhaustedSlot) {
             // Reuse exhausted slot
@@ -624,9 +657,9 @@ contract CacheEnabledGasLimitedPaymaster is
             userState.hasAvailableExhaustedSlot = false; // Mark as used
         } else {
             // Add to next available position (count < MAX_NULLIFIERS guaranteed by validation)
-            userState.nullifiers[userState.count] = nullifier;
+            userState.nullifiers[userState.activatedNullifierCount] = nullifier;
         }
-        userState.count++;
+        userState.activatedNullifierCount++;
 
         emit UserOpSponsoredActivation(
             userOpHash,
@@ -662,8 +695,10 @@ contract CacheEnabledGasLimitedPaymaster is
         address sender = userOp.getSender();
 
         // Check if sender has any activated nullifiers (cached)
-        UserNullifierState storage userState = userStates[poolId][sender];
-        if (userState.count > 0) {
+        UserNullifierState storage userState = userStates[
+            DataLib.getUserStateKey(poolId, sender)
+        ];
+        if (userState.activatedNullifierCount > 0) {
             // Return cached stub data (35 bytes custom data = 87 bytes total)
             return DataLib.generateCachedStubData(poolId);
         } else {

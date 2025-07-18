@@ -381,4 +381,11 @@ library DataLib {
         startIndex = uint8(packed >> 8);
         endIndex = uint8(packed & 0xFF);
     }
+
+    function getUserStateKey(
+        uint256 poolId,
+        address sender
+    ) internal pure returns (bytes32) {
+        return keccak256(abi.encode(poolId, sender));
+    }
 }
