@@ -120,6 +120,7 @@ library NullifierCacheStateLib {
     ) internal pure returns (uint256) {
         flags = setActivatedNullifierCount(flags, 1);
         flags = setActiveNullifierIndex(flags, 0); // Start consuming from slot 0
+        flags = setHasAvailableExhaustedSlot(flags, false); // Clear exhausted state
         return flags;
     }
 

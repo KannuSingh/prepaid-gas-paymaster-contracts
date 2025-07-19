@@ -59,18 +59,25 @@ async function main() {
   );
 
   console.log(`🚀 SimpleCacheEnabledGasLimitedPaymaster deployed at: ${paymaster.address}`);
-
+  await new Promise((resolve) => setTimeout(resolve, 2000));
   const joiningFee = parseEther('1');
+  // Get the return value first
+  const { result: poolId1 } = await paymaster.simulate.createPool([joiningFee]);
+  console.log({ poolId1 });
+  // Then execute the transaction
   await paymaster.write.createPool([joiningFee]);
-  const poolId = 1n;
-
+  const poolCounter = await paymaster.read.poolCounter();
+  console.log({ poolCounter });
+  const poolId = poolId1;
+  await new Promise((resolve) => setTimeout(resolve, 4000));
   // Initial setup with dummy identity
   const dummyId = new Identity(await wallet1.signMessage({ message: 'dummy' }));
   const dummyId2 = new Identity(await wallet1.signMessage({ message: 'dummy2' }));
   let localPool = new Group([dummyId.commitment, dummyId2.commitment]);
   await paymaster.write.addMember([poolId, dummyId.commitment], { value: joiningFee });
+  await new Promise((resolve) => setTimeout(resolve, 4000));
   await paymaster.write.addMember([poolId, dummyId2.commitment], { value: joiningFee });
-
+  await new Promise((resolve) => setTimeout(resolve, 4000));
   const smartAccount = await toSimpleSmartAccount({
     owner: wallet1,
     client: publicClient,
@@ -197,7 +204,7 @@ async function main() {
             return {
               paymaster: paymaster.address,
               paymasterData: stubData,
-              paymasterPostOpGasLimit: isCached ? 118500n : 78000n,
+              paymasterPostOpGasLimit: isCached ? 55000n : 86700n,
             };
           },
           async getPaymasterData(parameters: GetPaymasterDataParameters) {
@@ -343,8 +350,15 @@ async function main() {
       console.log({
         paymasterPostOpGasLimit: request.paymasterPostOpGasLimit,
         paymasterVerificationGasLimit: request.paymasterVerificationGasLimit,
+        verificationGasLimit: request.verificationGasLimit,
+        preVerificationGas: request.preVerificationGas,
+        callGasLimit: request.callGasLimit,
       });
       const signature = await smartAccount.signUserOperation(request);
+
+      const beforeTransactionTotalUsersDeposit = await paymaster.read.totalUsersDeposit();
+      const beforeTransactionPaymasterBalance = await paymaster.read.getDeposit();
+
       const userOpHash = await bundlerClient.sendUserOperation({
         entryPointAddress: entryPoint07Address,
         ...request,
@@ -366,9 +380,28 @@ async function main() {
           isZKProof: !isAlreadyCached,
           isCached: isAlreadyCached,
         });
+        const afterTransactionTotalUsersDeposit = await paymaster.read.totalUsersDeposit();
+        const afterTransactionPaymasterBalance = await paymaster.read.getDeposit();
+        const amountUserPaid =
+          beforeTransactionTotalUsersDeposit - afterTransactionTotalUsersDeposit;
+        const amountPaymasterPaid =
+          beforeTransactionPaymasterBalance - afterTransactionPaymasterBalance;
+        const revenueEarnedFromTransaction = amountUserPaid - amountPaymasterPaid;
 
+        console.log(`💰 Amount Users Pay for tx: ${formatEther(amountUserPaid)} ETH`);
+        console.log(`💰 Amount Paymaster Paid for tx: ${formatEther(amountPaymasterPaid)} units`);
+        console.log(`💰 Revenue Earned from tx: ${formatEther(revenueEarnedFromTransaction)} ETH`);
+        console.log(
+          `💰 Revenue/PaymasterPaid Percentage : ${(revenueEarnedFromTransaction * BigInt(10000)) / amountPaymasterPaid} %`
+        );
+        console.log(
+          `💰 Revenue/UserPaid Percentage : ${(revenueEarnedFromTransaction * BigInt(10000)) / amountUserPaid} %`
+        );
+
+        console.log(`   💰 UserOp Gas used: ${gasUsed.toLocaleString()} units`);
+        console.log(`   💰 UserOp Gas Cost: ${formatEther(receipt.actualGasCost)} ETH`);
+        console.log(`   💰 Tx Gas used: ${receipt.receipt.gasUsed.toLocaleString()} units`);
         console.log(`   💰 Gas used: ${gasUsed.toLocaleString()} units`);
-        console.log(`   📊 Validation type: ${isAlreadyCached ? 'CACHED' : 'ZK PROOF'}`);
       } else {
         console.log(`❌ Transaction ${i} failed - Hash: ${userOpHash}`);
         failedTransactions.push(i);
@@ -389,6 +422,15 @@ async function main() {
       const poolDeposits = await paymaster.read.getPoolDeposits([poolId]);
       const poolSize = await paymaster.read.getMerkleTreeSize([poolId]);
       console.log(`   Pool size: ${poolSize}, Total deposits: ${formatEther(poolDeposits)} ETH`);
+
+      // const totalUsersDeposit = await paymaster.read.totalUsersDeposit();
+      // const paymasterBalance = await paymaster.read.getDeposit();
+      const revenue = await paymaster.read.getRevenue();
+
+      console.log(`\n📈 FINAL CONTRACT STATE:`);
+      // console.log(`Total users deposit: ${formatEther(totalUsersDeposit)} ETH`);
+      // console.log(`Paymaster balance: ${formatEther(paymasterBalance)} ETH`);
+      console.log(`💰 Paymaster revenue: ${formatEther(revenue)} ETH`);
     } catch (error) {
       console.log(`❌ Transaction ${i} failed with error:`, error);
 
@@ -398,101 +440,101 @@ async function main() {
   }
 
   // Final analysis
-  console.log('\n📊 FINAL SUMMARY:');
-  console.log(`👥 Total identities created: ${identities.length}`);
-  console.log(`✅ Successful transactions: ${successfulTransactions.length}/5`);
-  console.log(`❌ Failed transactions: ${failedTransactions.length}/5`);
+  // console.log('\n📊 FINAL SUMMARY:');
+  // console.log(`👥 Total identities created: ${identities.length}`);
+  // console.log(`✅ Successful transactions: ${successfulTransactions.length}/5`);
+  // console.log(`❌ Failed transactions: ${failedTransactions.length}/5`);
 
-  if (successfulTransactions.length > 0) {
-    console.log(`Successful transactions: ${successfulTransactions.join(', ')}`);
-  }
+  // if (successfulTransactions.length > 0) {
+  //   console.log(`Successful transactions: ${successfulTransactions.join(', ')}`);
+  // }
 
-  if (failedTransactions.length > 0) {
-    console.log(`Failed transactions: ${failedTransactions.join(', ')}`);
-  }
+  // if (failedTransactions.length > 0) {
+  //   console.log(`Failed transactions: ${failedTransactions.join(', ')}`);
+  // }
 
   // Gas consumption analysis
-  console.log('\n⛽ GAS CONSUMPTION ANALYSIS:');
-  const zkProofTransactions = gasConsumption.filter((tx) => tx.isZKProof);
-  const cachedTransactions = gasConsumption.filter((tx) => tx.isCached);
+  // console.log('\n⛽ GAS CONSUMPTION ANALYSIS:');
+  // const zkProofTransactions = gasConsumption.filter((tx) => tx.isZKProof);
+  // const cachedTransactions = gasConsumption.filter((tx) => tx.isCached);
 
-  if (zkProofTransactions.length > 0) {
-    const avgZKGas =
-      zkProofTransactions.reduce((sum, tx) => sum + tx.gasUsed, 0) / zkProofTransactions.length;
+  // if (zkProofTransactions.length > 0) {
+  //   const avgZKGas =
+  //     zkProofTransactions.reduce((sum, tx) => sum + tx.gasUsed, 0) / zkProofTransactions.length;
 
-    console.log(`ZK Proof transactions (${zkProofTransactions.length}):`);
-    console.log(`  Average gas: ${Math.round(avgZKGas).toLocaleString()} units`);
-  }
+  //   console.log(`ZK Proof transactions (${zkProofTransactions.length}):`);
+  //   console.log(`  Average gas: ${Math.round(avgZKGas).toLocaleString()} units`);
+  // }
 
-  if (cachedTransactions.length > 0) {
-    const avgCachedGas =
-      cachedTransactions.reduce((sum, tx) => sum + tx.gasUsed, 0) / cachedTransactions.length;
+  // if (cachedTransactions.length > 0) {
+  //   const avgCachedGas =
+  //     cachedTransactions.reduce((sum, tx) => sum + tx.gasUsed, 0) / cachedTransactions.length;
 
-    console.log(`Cached transactions (${cachedTransactions.length}):`);
-    console.log(`  Average gas: ${Math.round(avgCachedGas).toLocaleString()} units`);
+  //   console.log(`Cached transactions (${cachedTransactions.length}):`);
+  //   console.log(`  Average gas: ${Math.round(avgCachedGas).toLocaleString()} units`);
 
-    if (zkProofTransactions.length > 0) {
-      const gasSavings =
-        zkProofTransactions.reduce((sum, tx) => sum + tx.gasUsed, 0) / zkProofTransactions.length -
-        avgCachedGas;
+  //   if (zkProofTransactions.length > 0) {
+  //     const gasSavings =
+  //       zkProofTransactions.reduce((sum, tx) => sum + tx.gasUsed, 0) / zkProofTransactions.length -
+  //       avgCachedGas;
 
-      console.log(`💰 SAVINGS with caching:`);
-      console.log(
-        `  Gas saved: ${Math.round(gasSavings).toLocaleString()} units (${((gasSavings / (zkProofTransactions.reduce((sum, tx) => sum + tx.gasUsed, 0) / zkProofTransactions.length)) * 100).toFixed(1)}%)`
-      );
-    }
-  }
+  //     console.log(`💰 SAVINGS with caching:`);
+  //     console.log(
+  //       `  Gas saved: ${Math.round(gasSavings).toLocaleString()} units (${((gasSavings / (zkProofTransactions.reduce((sum, tx) => sum + tx.gasUsed, 0) / zkProofTransactions.length)) * 100).toFixed(1)}%)`
+  //     );
+  //   }
+  // }
 
   // Performance analysis
-  if (proofGenerationTimes.length > 0) {
-    const avgProofTime =
-      proofGenerationTimes.reduce((a, b) => a + b, 0) / proofGenerationTimes.length;
-    const minProofTime = Math.min(...proofGenerationTimes);
-    const maxProofTime = Math.max(...proofGenerationTimes);
+  // if (proofGenerationTimes.length > 0) {
+  //   const avgProofTime =
+  //     proofGenerationTimes.reduce((a, b) => a + b, 0) / proofGenerationTimes.length;
+  //   const minProofTime = Math.min(...proofGenerationTimes);
+  //   const maxProofTime = Math.max(...proofGenerationTimes);
 
-    console.log('\n⚡ PROOF GENERATION PERFORMANCE:');
-    console.log(`Average time: ${avgProofTime.toFixed(2)}ms`);
-    console.log(`Fastest: ${minProofTime}ms`);
-    console.log(`Slowest: ${maxProofTime}ms`);
-    console.log(`Total ZK proof transactions: ${proofGenerationTimes.length}`);
-    console.log(`Total cached transactions: ${gasConsumption.filter((tx) => tx.isCached).length}`);
+  //   console.log('\n⚡ PROOF GENERATION PERFORMANCE:');
+  //   console.log(`Average time: ${avgProofTime.toFixed(2)}ms`);
+  //   console.log(`Fastest: ${minProofTime}ms`);
+  //   console.log(`Slowest: ${maxProofTime}ms`);
+  //   console.log(`Total ZK proof transactions: ${proofGenerationTimes.length}`);
+  //   console.log(`Total cached transactions: ${gasConsumption.filter((tx) => tx.isCached).length}`);
 
-    // Individual timing breakdown
-    console.log('\n📋 Individual Proof Times:');
-    let proofIndex = 0;
-    gasConsumption.forEach((tx) => {
-      if (tx.isZKProof) {
-        console.log(
-          `  Transaction ${tx.transaction}: ${proofGenerationTimes[proofIndex]}ms (ZK PROOF)`
-        );
-        proofIndex++;
-      } else {
-        console.log(`  Transaction ${tx.transaction}: 0ms (CACHED)`);
-      }
-    });
-  }
+  //   // Individual timing breakdown
+  //   console.log('\n📋 Individual Proof Times:');
+  //   let proofIndex = 0;
+  //   gasConsumption.forEach((tx) => {
+  //     if (tx.isZKProof) {
+  //       console.log(
+  //         `  Transaction ${tx.transaction}: ${proofGenerationTimes[proofIndex]}ms (ZK PROOF)`
+  //       );
+  //       proofIndex++;
+  //     } else {
+  //       console.log(`  Transaction ${tx.transaction}: 0ms (CACHED)`);
+  //     }
+  //   });
+  // }
 
   // Final contract state
-  const finalPoolSize = await paymaster.read.getMerkleTreeSize([poolId]);
-  const finalPoolDeposits = await paymaster.read.getPoolDeposits([poolId]);
-  const totalUsersDeposit = await paymaster.read.totalUsersDeposit();
-  const paymasterBalance = await paymaster.read.getDeposit();
-  const revenue = await paymaster.read.getRevenue();
+  // const finalPoolSize = await paymaster.read.getMerkleTreeSize([poolId]);
+  // const finalPoolDeposits = await paymaster.read.getPoolDeposits([poolId]);
+  // const totalUsersDeposit = await paymaster.read.totalUsersDeposit();
+  // const paymasterBalance = await paymaster.read.getDeposit();
+  // const revenue = await paymaster.read.getRevenue();
 
-  // Final user state using new mapping
-  const finalUserStateKey = getUserStateKey(poolId, smartAccount.address);
-  const finalUserNullifiersStateFlags = await paymaster.read.userNullifiersStates([
-    finalUserStateKey,
-  ]);
-  const finalDecodedState = decodeNullifierState(finalUserNullifiersStateFlags);
+  // // Final user state using new mapping
+  // const finalUserStateKey = getUserStateKey(poolId, smartAccount.address);
+  // const finalUserNullifiersStateFlags = await paymaster.read.userNullifiersStates([
+  //   finalUserStateKey,
+  // ]);
+  // const finalDecodedState = decodeNullifierState(finalUserNullifiersStateFlags);
 
-  console.log(`\n📈 FINAL CONTRACT STATE:`);
-  console.log(`Pool size: ${finalPoolSize} members`);
-  console.log(`Pool deposits: ${formatEther(finalPoolDeposits)} ETH`);
-  console.log(`Total users deposit: ${formatEther(totalUsersDeposit)} ETH`);
-  console.log(`Paymaster balance: ${formatEther(paymasterBalance)} ETH`);
-  console.log(`💰 Paymaster revenue: ${formatEther(revenue)} ETH`);
-  console.log(`User cached nullifiers: ${finalDecodedState.activatedNullifierCount}`);
+  // console.log(`\n📈 FINAL CONTRACT STATE:`);
+  // console.log(`Pool size: ${finalPoolSize} members`);
+  // console.log(`Pool deposits: ${formatEther(finalPoolDeposits)} ETH`);
+  // console.log(`Total users deposit: ${formatEther(totalUsersDeposit)} ETH`);
+  // console.log(`Paymaster balance: ${formatEther(paymasterBalance)} ETH`);
+  // console.log(`💰 Paymaster revenue: ${formatEther(revenue)} ETH`);
+  // console.log(`User cached nullifiers: ${finalDecodedState.activatedNullifierCount}`);
 }
 
 async function generatePaymasterData(

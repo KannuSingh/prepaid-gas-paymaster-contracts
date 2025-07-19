@@ -158,7 +158,7 @@ async function main() {
   let currentPhase = 'ACTIVATION'; // ACTIVATION, CACHED, or EXHAUSTED
   let consecutiveFailures = 0;
   const MAX_CONSECUTIVE_FAILURES = 3;
-  const MAX_TOTAL_TRANSACTIONS = 100; // Safety limit
+  const MAX_TOTAL_TRANSACTIONS = 78; // Safety limit
 
   while (i <= MAX_TOTAL_TRANSACTIONS) {
     try {
@@ -268,7 +268,7 @@ async function main() {
               return {
                 paymaster: paymaster.address,
                 paymasterData: cachedStubData,
-                paymasterPostOpGasLimit: 118500n,
+                paymasterPostOpGasLimit: 55000n,
               };
             } else {
               // Generate ZK proof stub data with dummy values
@@ -311,7 +311,7 @@ async function main() {
               return {
                 paymaster: paymaster.address,
                 paymasterData: zkStubData,
-                paymasterPostOpGasLimit: 78000n,
+                paymasterPostOpGasLimit: 86700n,
               };
             }
           },
@@ -396,6 +396,15 @@ async function main() {
         ],
         paymasterContext,
       });
+      // console.log({
+      //   verificationGasLimit: request.verificationGasLimit,
+      //   preVerificationGas: request.preVerificationGas,
+      //   paymasterVerificationGasLimit: request.paymasterVerificationGasLimit,
+      //   paymasterPostOpGasLimit: request.paymasterPostOpGasLimit,
+      //   callGasLimit: request.callGasLimit,
+      // });
+      const beforeTransactionTotalUsersDeposit = await paymaster.read.totalUsersDeposit();
+      const beforeTransactionPaymasterBalance = await paymaster.read.getDeposit();
 
       const signature = await smartAccount.signUserOperation(request);
       const userOpHash = await bundlerClient.sendUserOperation({
@@ -422,6 +431,23 @@ async function main() {
           isCached: willUseCache,
           phase: currentPhase,
         });
+        const afterTransactionTotalUsersDeposit = await paymaster.read.totalUsersDeposit();
+        const afterTransactionPaymasterBalance = await paymaster.read.getDeposit();
+        const amountUserPaid =
+          beforeTransactionTotalUsersDeposit - afterTransactionTotalUsersDeposit;
+        const amountPaymasterPaid =
+          beforeTransactionPaymasterBalance - afterTransactionPaymasterBalance;
+        const revenueEarnedFromTransaction = amountUserPaid - amountPaymasterPaid;
+
+        console.log(`💰 Amount Users Pay for tx: ${formatEther(amountUserPaid)} ETH`);
+        console.log(`💰 Amount Paymaster Paid for tx: ${formatEther(amountPaymasterPaid)} units`);
+        console.log(`💰 Revenue Earned from tx: ${formatEther(revenueEarnedFromTransaction)} ETH`);
+        console.log(
+          `💰 Revenue/PaymasterPaid Percentage : ${(revenueEarnedFromTransaction * BigInt(10000)) / amountPaymasterPaid} %`
+        );
+        console.log(
+          `💰 Revenue/UserPaid Percentage : ${(revenueEarnedFromTransaction * BigInt(10000)) / amountUserPaid} %`
+        );
 
         console.log(`   💰 Gas used: ${gasUsed.toLocaleString()} units`);
         console.log(`   💰 Actual cost: ${formatEther(actualGasCost)} ETH`);

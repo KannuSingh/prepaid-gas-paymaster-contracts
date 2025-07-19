@@ -10,6 +10,11 @@ library Constants {
         ESTIMATION // 1 - Gas estimation mode
     }
 
+    enum NullifierMode {
+        ACTIVATION, // ZK proof transaction (first time activation)
+        CACHED // Cached transaction (consuming from activated nullifiers)
+    }
+
     // EIP-4337 Paymaster data structure offsets
     uint256 internal constant PAYMASTER_VALIDATION_GAS_OFFSET = 20;
     uint256 internal constant PAYMASTER_POSTOP_GAS_OFFSET = 36;
@@ -45,8 +50,8 @@ library Constants {
     uint256 internal constant VALIDATION_FAILED = 1;
 
     uint256 internal constant POSTOP_GAS_COST = 65000;
-    uint256 internal constant POSTOP_ACTIVATION_GAS_COST = 82000;
-    uint256 internal constant POSTOP_CACHE_GAS_COST = 120000;
+    uint256 internal constant POSTOP_ACTIVATION_GAS_COST = 86650;
+    uint256 internal constant POSTOP_CACHE_GAS_COST = 45000;
 
     // Merkle tree constraints
     uint256 internal constant MIN_DEPTH = 1;
