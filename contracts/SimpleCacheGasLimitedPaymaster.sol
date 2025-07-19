@@ -12,6 +12,7 @@ import "./base/BasePaymaster.sol";
 import "./base/Constants.sol";
 import "./base/DataLib.sol";
 import "./base/NullifierCacheStateLib.sol";
+import "./base/PostOpContextLib.sol";
 
 /// @title SimpleCacheEnabledGasLimitedPaymaster
 /// @notice Paymaster that uses pool membership proofs to authorize gas payments from pool deposits,
@@ -22,11 +23,7 @@ contract SimpleCacheEnabledGasLimitedPaymaster is
 {
     using UserOperationLib for PackedUserOperation;
     using NullifierCacheStateLib for uint256;
-
-    enum NullifierMode {
-        ACTIVATION, // ZK proof transaction (first time activation)
-        CACHED // Cached transaction (consuming from activated nullifiers)
-    }
+    using PostOpContextLib for bytes;
 
     /// @notice Total user deposits held by this paymaster in the EntryPoint, attributed to users.
     /// This is used to track the protocol's available revenue (totalEntryPointDeposit - totalUsersDeposit).
@@ -324,11 +321,12 @@ contract SimpleCacheEnabledGasLimitedPaymaster is
         // === Return appropriate context ===
         if (!isValidationMode) {
             return (
-                abi.encode(
-                    NullifierMode.ACTIVATION,
+                PostOpContextLib.encodeActivationContext(
                     poolId,
                     userOpHash,
                     proof.nullifier,
+                    userNullifiersState,
+                    userStateKey,
                     sender
                 ),
                 Constants.VALIDATION_FAILED
@@ -336,11 +334,12 @@ contract SimpleCacheEnabledGasLimitedPaymaster is
         }
 
         return (
-            abi.encode(
-                NullifierMode.ACTIVATION,
+            PostOpContextLib.encodeActivationContext(
                 poolId,
                 userOpHash,
                 proof.nullifier,
+                userNullifiersState,
+                userStateKey,
                 sender
             ),
             _packValidationData(false, 0, 0)
@@ -383,6 +382,10 @@ contract SimpleCacheEnabledGasLimitedPaymaster is
         ) {
             revert PaymasterValidationErrors.SenderNotCached(sender, poolId);
         }
+        uint256 joiningFee = pools[poolId].joiningFee;
+        if ((joiningFee < requiredPreFund) && isValidationMode) {
+            revert PaymasterValidationErrors.UserExceededGasFund();
+        }
 
         // === Check paymaster's deposit balance ===
         if (getDeposit() < requiredPreFund && isValidationMode) {
@@ -392,7 +395,8 @@ contract SimpleCacheEnabledGasLimitedPaymaster is
         // === Calculate total available gas using activeNullifierIndex ===
         uint256 totalAvailable = _calculateAvailableGasWithActiveIndex(
             userStateKey,
-            poolId
+            joiningFee,
+            userNullifiersState
         );
 
         // === Check if sufficient gas available ===
@@ -402,28 +406,41 @@ contract SimpleCacheEnabledGasLimitedPaymaster is
 
         if (!isValidationMode) {
             return (
-                abi.encode(NullifierMode.CACHED, poolId, userOpHash, 0, sender),
+                PostOpContextLib.encodeCachedContext(
+                    poolId,
+                    userOpHash,
+                    joiningFee,
+                    userNullifiersState,
+                    userStateKey,
+                    sender
+                ),
                 Constants.VALIDATION_FAILED
             );
         }
 
         return (
-            abi.encode(NullifierMode.CACHED, poolId, userOpHash, 0, sender),
+            PostOpContextLib.encodeCachedContext(
+                poolId,
+                userOpHash,
+                joiningFee,
+                userNullifiersState,
+                userStateKey,
+                sender
+            ),
             _packValidationData(false, 0, 0)
         );
     }
 
     /// @notice Calculate total available gas starting from activeNullifierIndex with wraparound
     /// @param userStateKey The user's nullifier state key
-    /// @param poolId The pool ID to get joining fee from
+    /// @param joiningFee The pool joining fee
+    /// @param userNullifiersState The user's nullifier state
     /// @return totalAvailable Total available gas across active nullifiers
     function _calculateAvailableGasWithActiveIndex(
         bytes32 userStateKey,
-        uint256 poolId
+        uint256 joiningFee,
+        uint256 userNullifiersState
     ) internal view returns (uint256 totalAvailable) {
-        uint256 joiningFee = pools[poolId].joiningFee; // Cache to avoid stack too deep
-        uint256 userNullifiersState = userNullifiersStates[userStateKey];
-
         uint8 activatedCount = userNullifiersState.getActivatedNullifierCount();
         uint8 startIndex = userNullifiersState.getActiveNullifierIndex();
 
@@ -465,38 +482,40 @@ contract SimpleCacheEnabledGasLimitedPaymaster is
         uint256 actualGasCost,
         uint256 actualUserOpFeePerGas
     ) internal override {
-        (
-            NullifierMode mode,
-            uint256 poolId,
-            bytes32 userOpHash,
-            uint256 nullifierOrNullifierIndices,
-            address sender
-        ) = abi.decode(
-                context,
-                (NullifierMode, uint256, bytes32, uint256, address)
-            );
-
-        if (mode == NullifierMode.ACTIVATION) {
+        // === Decode context using new efficient unified decoding (CHANGED) ===
+        PostOpContextLib.Context memory ctx = PostOpContextLib.decodeContext(
+            context
+        );
+        uint256 totalGasCost = actualGasCost;
+        if (ctx.mode == Constants.NullifierMode.ACTIVATION) {
             uint256 postOpGasCost = Constants.POSTOP_ACTIVATION_GAS_COST *
                 actualUserOpFeePerGas;
-            uint256 totalGasCost = actualGasCost + postOpGasCost;
+            totalGasCost += postOpGasCost;
             _handleActivationPostOp(
-                poolId,
-                nullifierOrNullifierIndices,
+                ctx.poolId,
+                ctx.nullifierOrJoiningFee, // nullifier
                 totalGasCost,
-                userOpHash,
-                sender
+                ctx.userOpHash,
+                ctx.sender,
+                ctx.userNullifiersState,
+                ctx.userStateKey
             );
-            _reduceDeposits(poolId, totalGasCost);
-            totalUsersDeposit -= totalGasCost;
         } else {
             uint256 postOpGasCost = Constants.POSTOP_CACHE_GAS_COST *
                 actualUserOpFeePerGas;
-            uint256 totalGasCost = actualGasCost + postOpGasCost;
-            _handleCachedPostOp(poolId, totalGasCost, userOpHash, sender);
-            _reduceDeposits(poolId, totalGasCost);
-            totalUsersDeposit -= totalGasCost;
+            totalGasCost += postOpGasCost;
+            _handleCachedPostOp(
+                ctx.poolId,
+                totalGasCost,
+                ctx.userOpHash,
+                ctx.sender,
+                ctx.nullifierOrJoiningFee, // joiningFee
+                ctx.userNullifiersState,
+                ctx.userStateKey
+            );
         }
+        _reduceDeposits(ctx.poolId, totalGasCost);
+        totalUsersDeposit -= totalGasCost;
     }
 
     /// @notice Handle cached postOp with proper activeNullifierIndex management
@@ -504,16 +523,17 @@ contract SimpleCacheEnabledGasLimitedPaymaster is
         uint256 poolId,
         uint256 totalGasCost,
         bytes32 userOpHash,
-        address sender
+        address sender,
+        uint256 joiningFee,
+        uint256 userNullifiersState,
+        bytes32 userStateKey
     ) internal {
-        bytes32 userStateKey = DataLib.getUserStateKey(poolId, sender);
-        uint256 joiningFee = pools[poolId].joiningFee; // Cache to avoid stack too deep
-
         // Process consumption and update state
         uint256 updatedState = _processNullifierConsumption(
             userStateKey,
             totalGasCost,
-            joiningFee
+            joiningFee,
+            userNullifiersState
         );
 
         // Update final state
@@ -529,9 +549,10 @@ contract SimpleCacheEnabledGasLimitedPaymaster is
     function _processNullifierConsumption(
         bytes32 userStateKey,
         uint256 totalGasCost,
-        uint256 joiningFee
+        uint256 joiningFee,
+        uint256 currentUserNullifiersState
     ) internal returns (uint256 updatedState) {
-        updatedState = userNullifiersStates[userStateKey];
+        updatedState = currentUserNullifiersState;
         uint256[2] storage _userNullifiers = userNullifiers[userStateKey];
 
         uint8 activatedCount = updatedState.getActivatedNullifierCount();
@@ -599,14 +620,14 @@ contract SimpleCacheEnabledGasLimitedPaymaster is
         uint256 nullifier,
         uint256 totalGasCost,
         bytes32 userOpHash,
-        address sender
+        address sender,
+        uint256 userNullifiersState,
+        bytes32 userStateKey
     ) internal {
         // 1. Deduct gas from the new nullifier
         nullifierGasUsage[nullifier] += totalGasCost;
 
         // 2. Add nullifier to user's activated list
-        bytes32 userStateKey = DataLib.getUserStateKey(poolId, sender);
-        uint256 userNullifiersState = userNullifiersStates[userStateKey];
         uint256[2] storage _userNullifiers = userNullifiers[userStateKey];
 
         uint8 currentCount = userNullifiersState.getActivatedNullifierCount();
