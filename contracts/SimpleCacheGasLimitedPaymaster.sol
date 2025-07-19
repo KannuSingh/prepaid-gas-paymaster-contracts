@@ -220,15 +220,15 @@ contract SimpleCacheEnabledGasLimitedPaymaster is
         bool isValidationMode = data.config.mode ==
             Constants.PaymasterMode.VALIDATION;
         uint256 poolId = data.poolId;
-        DataLib.PoolMembershipProof memory proof = data.proof;
+        // DataLib.PoolMembershipProof memory proof = data.proof;
 
         // === 2. Validate Merkle Tree Depth ===
         if (
-            proof.merkleTreeDepth < Constants.MIN_DEPTH ||
-            proof.merkleTreeDepth > Constants.MAX_DEPTH
+            data.proof.merkleTreeDepth < Constants.MIN_DEPTH ||
+            data.proof.merkleTreeDepth > Constants.MAX_DEPTH
         ) {
             revert PaymasterValidationErrors.MerkleTreeDepthUnsupported(
-                proof.merkleTreeDepth,
+                data.proof.merkleTreeDepth,
                 Constants.MIN_DEPTH,
                 Constants.MAX_DEPTH
             );
@@ -241,7 +241,7 @@ contract SimpleCacheEnabledGasLimitedPaymaster is
         PoolConfig storage pool = pools[poolId];
 
         // === State validation checks (fail gracefully in estimation mode) ===
-        bytes32 userStateKey = DataLib.getUserStateKey(poolId, sender);
+        bytes32 userStateKey = keccak256(abi.encode(poolId, sender));
         uint256 userNullifiersState = userNullifiersStates[userStateKey];
 
         // Check if we can add new nullifier
@@ -272,7 +272,7 @@ contract SimpleCacheEnabledGasLimitedPaymaster is
 
         // === 6. Check if joining fee is sufficient ===
         if (
-            (pool.joiningFee - nullifierGasUsage[proof.nullifier]) <
+            (pool.joiningFee - nullifierGasUsage[data.proof.nullifier]) <
             requiredPreFund &&
             isValidationMode
         ) {
@@ -285,18 +285,18 @@ contract SimpleCacheEnabledGasLimitedPaymaster is
         }
 
         // === 8. Check proof scope ===
-        if ((proof.scope != poolId) && isValidationMode) {
+        if ((data.proof.scope != poolId) && isValidationMode) {
             revert PaymasterValidationErrors.InvalidProofScope(
-                proof.scope,
+                data.proof.scope,
                 poolId
             );
         }
 
         // === 9. Check proof message ===
         bytes32 messageHash = DataLib._getMessageHash(userOp, entryPoint);
-        if ((proof.message != uint256(messageHash)) && isValidationMode) {
+        if ((data.proof.message != uint256(messageHash)) && isValidationMode) {
             revert PaymasterValidationErrors.InvalidProofMessage(
-                proof.message,
+                data.proof.message,
                 uint256(messageHash)
             );
         }
@@ -304,17 +304,17 @@ contract SimpleCacheEnabledGasLimitedPaymaster is
         // === 10. Root from history ===
         uint256 expectedRoot = pool.rootsHistory[data.config.merkleRootIndex];
         if (
-            (proof.merkleTreeRoot != expectedRoot || expectedRoot == 0) &&
+            (data.proof.merkleTreeRoot != expectedRoot || expectedRoot == 0) &&
             isValidationMode
         ) {
             revert PaymasterValidationErrors.InvalidMerkleTreeRoot(
-                proof.merkleTreeRoot,
+                data.proof.merkleTreeRoot,
                 expectedRoot
             );
         }
 
         // === 11. ZKP verification ===
-        if (!_validateProof(proof) && isValidationMode) {
+        if (!_validateProof(data.proof) && isValidationMode) {
             revert PaymasterValidationErrors.ProofVerificationFailed();
         }
 
@@ -324,7 +324,7 @@ contract SimpleCacheEnabledGasLimitedPaymaster is
                 PostOpContextLib.encodeActivationContext(
                     poolId,
                     userOpHash,
-                    proof.nullifier,
+                    data.proof.nullifier,
                     userNullifiersState,
                     userStateKey,
                     sender
@@ -337,7 +337,7 @@ contract SimpleCacheEnabledGasLimitedPaymaster is
             PostOpContextLib.encodeActivationContext(
                 poolId,
                 userOpHash,
-                proof.nullifier,
+                data.proof.nullifier,
                 userNullifiersState,
                 userStateKey,
                 sender
@@ -374,7 +374,7 @@ contract SimpleCacheEnabledGasLimitedPaymaster is
         }
 
         // === Get cached nullifier state ===
-        bytes32 userStateKey = DataLib.getUserStateKey(poolId, sender);
+        bytes32 userStateKey = keccak256(abi.encode(poolId, sender));
         uint256 userNullifiersState = userNullifiersStates[userStateKey];
         if (
             userNullifiersState.getActivatedNullifierCount() == 0 &&
@@ -446,32 +446,17 @@ contract SimpleCacheEnabledGasLimitedPaymaster is
 
         // Calculate available gas for each active nullifier
         for (uint8 i = 0; i < activatedCount; i++) {
-            totalAvailable += _calculateSlotAvailableGas(
-                userStateKey,
-                (startIndex + i) % 2,
-                joiningFee
-            );
+            uint256 nullifier = userNullifiers[userStateKey][
+                (startIndex + i) % 2
+            ];
+
+            if (nullifier == 0) {
+                return 0; // Empty slot
+            }
+
+            uint256 used = nullifierGasUsage[nullifier];
+            totalAvailable = joiningFee > used ? joiningFee - used : 0;
         }
-    }
-
-    /// @notice Calculate available gas for a specific nullifier slot
-    /// @param userStateKey The user's nullifier state key
-    /// @param slotIndex The slot index to check
-    /// @param joiningFee The pool's joining fee
-    /// @return available Available gas for this slot
-    function _calculateSlotAvailableGas(
-        bytes32 userStateKey,
-        uint8 slotIndex,
-        uint256 joiningFee
-    ) internal view returns (uint256 available) {
-        uint256 nullifier = userNullifiers[userStateKey][slotIndex];
-
-        if (nullifier == 0) {
-            return 0; // Empty slot
-        }
-
-        uint256 used = nullifierGasUsage[nullifier];
-        available = joiningFee > used ? joiningFee - used : 0;
     }
 
     /// @inheritdoc BasePaymaster
@@ -627,29 +612,39 @@ contract SimpleCacheEnabledGasLimitedPaymaster is
         // 1. Deduct gas from the new nullifier
         nullifierGasUsage[nullifier] += totalGasCost;
 
-        // 2. Add nullifier to user's activated list
-        uint256[2] storage _userNullifiers = userNullifiers[userStateKey];
-
         uint8 currentCount = userNullifiersState.getActivatedNullifierCount();
+
+        if (currentCount == 0) {
+            // First nullifier
+            userNullifiers[userStateKey][0] = nullifier;
+            userNullifiersStates[userStateKey] = userNullifiersState
+                .initializeFirstNullifier();
+            emit UserOpSponsoredActivation(
+                userOpHash,
+                poolId,
+                sender,
+                totalGasCost,
+                nullifier
+            );
+            return;
+        }
+
         bool hasExhaustedSlot = userNullifiersState
             .getHasAvailableExhaustedSlot();
 
         if (hasExhaustedSlot) {
             // Reuse exhausted slot
             uint8 slotIndex = userNullifiersState.getExhaustedSlotIndex();
-            _userNullifiers[slotIndex] = nullifier;
-            userNullifiersState = userNullifiersState.reuseExhaustedSlot();
-        } else if (currentCount == 0) {
-            // First nullifier
-            _userNullifiers[0] = nullifier;
-            userNullifiersState = userNullifiersState.initializeFirstNullifier();
+            userNullifiers[userStateKey][slotIndex] = nullifier;
+            userNullifiersStates[userStateKey] = userNullifiersState
+                .reuseExhaustedSlot();
         } else {
             // Second nullifier (currentCount == 1)
-            _userNullifiers[1] = nullifier;
-            userNullifiersState = userNullifiersState.addSecondNullifier();
+            userNullifiers[userStateKey][1] = nullifier;
+            userNullifiersStates[userStateKey] = userNullifiersState
+                .addSecondNullifier();
         }
 
-        userNullifiersStates[userStateKey] = userNullifiersState;
         emit UserOpSponsoredActivation(
             userOpHash,
             poolId,
@@ -677,7 +672,7 @@ contract SimpleCacheEnabledGasLimitedPaymaster is
         }
 
         address sender = userOp.getSender();
-        bytes32 userStateKey = DataLib.getUserStateKey(poolId, sender);
+        bytes32 userStateKey = keccak256(abi.encode(poolId, sender));
         uint256 userNullifiersState = userNullifiersStates[userStateKey];
         uint8 activatedCount = userNullifiersState.getActivatedNullifierCount();
 
