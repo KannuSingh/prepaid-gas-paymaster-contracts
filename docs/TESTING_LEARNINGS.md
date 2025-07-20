@@ -193,6 +193,7 @@ uint256 gasUsed = gasBefore - gasleft();
 - ❌ Forgetting `receive()` function in test contracts
 - ❌ Not validating SNARK field constraints in fuzz tests
 - ❌ Assuming duplicate identities are allowed
+- ❌ Using "test" prefix in function/variable names (triggers Foundry fuzz tests)
 
 ---
 

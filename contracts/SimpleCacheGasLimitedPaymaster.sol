@@ -594,7 +594,7 @@ contract SimpleCacheEnabledGasLimitedPaymaster is
 
         // Check if slot is now exhausted
         if (nullifierGasUsage[nullifier] >= joiningFee) {
-            _userNullifiers[slotIndex] = 0;
+            // _userNullifiers[slotIndex] = 0;
             wasExhausted = true;
         }
     }
