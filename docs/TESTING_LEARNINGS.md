@@ -208,5 +208,154 @@ uint256 gasUsed = gasBefore - gasleft();
 
 ---
 
+## 🔄 PostOp Testing Insights (COMPLETED)
+
+### Nullifier Lifecycle Understanding
+**Complete 2-Slot Consumption System:**
+- 🎯 **Activation**: First nullifier creates storage (~197k gas)
+- ⚡ **Cached**: Subsequent transactions consume existing nullifiers (~6.7k gas)  
+- 🔄 **Second Activation**: Adding nullifier to slot 1 (warm/cold storage analysis)
+- 🌊 **Wraparound Consumption**: activeIndex determines consumption order
+- 💀 **Exhaustion & Reuse**: Exhausted slots marked for reuse
+- 🎯 **Two-Slot Logic**: Cross-slot spillover and state management
+
+### Critical Consumption Patterns
+```solidity
+// Wraparound logic: (startIndex + i) % 2
+activeIndex=0: consume slot 0 → slot 1
+activeIndex=1: consume slot 1 → slot 0  
+```
+
+**Core Behaviors Validated:**
+- ✅ **Normal consumption**: Moderate gas fits in first slot
+- ✅ **Cross-slot spillover**: Excess gas flows to next slot
+- ✅ **Exhausted slot handling**: Consumption skips exhausted slots
+- ✅ **State transitions**: Proper flag management during exhaustion/reuse
+
+**Two-Slot System Architecture:**
+- 🏗️ **Fixed 2-slot buffer**: Maximum slots per user per pool
+- 🔢 **Circular consumption**: Wraparound from slot 1 to slot 0
+- 📊 **Gas budgets**: Each nullifier = joiningFee gas allowance
+- 🎛️ **Packed state**: Efficient single uint256 state storage
+
+### Two-Slot Consumption Architecture
+**Core System Understanding:**
+```solidity
+// Each user has 2 slots max per pool
+mapping(bytes32 => uint256[2]) public userNullifiers;
+// State packed in single uint256: activatedCount | activeIndex | exhaustedFlags
+mapping(bytes32 => uint256) public userNullifiersStates;
+```
+
+**Key Behaviors Discovered:**
+- 🔄 **Sequential consumption**: Follows `(startIndex + i) % 2` order strictly
+- 💰 **Per-nullifier budgets**: Each nullifier gets exactly `joiningFee` gas budget
+- 🎯 **Order-based, not optimization-based**: Does NOT prefer slots with more gas
+- 🚫 **Budget constraints**: Users cannot exceed their individual joining fee limits
+- 📊 **Spillover only when exhausted**: Next slot used only when current is empty
+
+**Critical Algorithm Insight:**
+```solidity
+// System follows strict order - NOT gas optimization
+activeIndex=0: Always try slot 0 first, then slot 1 if needed
+activeIndex=1: Always try slot 1 first, then slot 0 if needed
+```
+
+**Testing Strategy Refined:**
+- ✅ **Test algorithm order**: Validate sequential consumption pattern
+- ✅ **Test spillover logic**: When slot is truly exhausted  
+- ✅ **Test budget limits**: Users can't exceed their joining fee
+- ✅ **Test realistic scenarios**: What validation would actually allow
+
+## 🔍 ValidatePaymasterUserOp Testing Insights (NEW)
+
+### ERC-4337 Dual-Path Validation Architecture
+**Core Method Understanding:**
+```solidity
+// Route determination based on data length
+if (paymasterAndData.length == 85) {
+    return _validateCachedEnabledPaymasterUserOp(); // Optimized path
+} else {
+    // Full ZK proof validation pipeline (532 bytes)
+}
+```
+
+**Critical Validation Pipeline (ZK Proof Path):**
+- 📊 **Data structure validation**: Format and length checks
+- 🌳 **Merkle constraints**: Depth limits [1, 32]
+- 🏊 **Pool validation**: Existence, membership, non-empty
+- 🎯 **State management**: Nullifier slot availability  
+- 💰 **Budget enforcement**: User and paymaster fund limits
+- 🔐 **Cryptographic verification**: Scope, message, root, ZK proof
+- 📦 **Context generation**: 181-byte activation context
+
+**Optimized Cached Path:**
+- ⚡ **Simplified checks**: Pool existence, cached state, gas availability
+- 🚀 **Performance gain**: ~75% gas savings vs ZK proof path
+- 📦 **Context generation**: 181-byte cached context
+
+### Validation vs Estimation Mode Patterns
+```solidity
+// Many checks are conditional on validation mode
+if (condition && isValidationMode) {
+    revert SpecificError();
+}
+```
+
+**Key Behavioral Differences:**
+- ✅ **Validation mode**: Full checks, success returns `validationData = 0`
+- 🔧 **Estimation mode**: Relaxed checks, always returns `validationData = 1`
+- 🎯 **Gas estimation**: Uses estimation mode to calculate gas without enforcement
+
+### Complex Error Testing Strategies
+**Systematic Error Injection:**
+```solidity
+// Test each validation step independently
+function test_ValidateZKProof_InvalidDepthTooSmall() public {
+    bytes memory paymasterData = _createPaymasterDataWithCustomDepth(
+        poolId, nullifierIndex, merkleRootIndex, 0 // Below MIN_DEPTH
+    );
+    expectValidationError(PaymasterValidationErrors.MerkleTreeDepthUnsupported.selector);
+    callValidatePaymasterUserOp(userOp, userOpHash, requiredPreFund);
+}
+```
+
+**Helper Pattern for Custom Data:**
+- 🛠️ **Modular data creation**: Separate helpers for each field modification
+- 🔧 **Error isolation**: Test one validation failure at a time
+- 📊 **Comprehensive coverage**: Every validation step gets dedicated test
+
+### Mock Integration Patterns
+**Strategic Mock Usage:**
+- 🎭 **ZK Verifier**: `mockVerifier.setShouldReturnValid(false)` for proof failures
+- 🏦 **EntryPoint**: Fund manipulation for deposit testing
+- 📊 **State Setup**: PostOp calls to create cached nullifiers
+
+**Complex State Setup:**
+```solidity
+function _setupCachedNullifiersForTesting() internal {
+    // Simulate activation flow through postOp
+    bytes memory activationContext1 = abi.encodePacked(...);
+    vm.prank(address(mockEntryPoint));
+    paymaster.postOp(IPaymaster.PostOpMode.opSucceeded, activationContext1, ...);
+}
+```
+
+## 🔮 Next Testing Priorities
+
+### ERC-4337 Method Testing (In Progress)
+1. ✅ **`_validatePaymasterUserOp()`** - Core ERC-4337 validation logic (COMPLETED)
+2. **`getPaymasterStubData()`** - Gas estimation helper (NEXT)
+3. **`verifyProof()`** - ZK proof validation wrapper
+4. **`addMembers()`** - Batch operations efficiency  
+5. **Revenue management** - `withdrawTo()`, `getRevenue()` financial logic
+
+### Advanced Test Scenarios (Ready)
+- 🎭 **Multi-pool interactions** (cross-pool operations)
+- ⚡ **Performance under load** (large trees, many members)
+- 🔐 **Security edge cases** (invalid proofs, state manipulation)
+- 💰 **Financial edge cases** (insufficient funds, revenue calculations)
+- 🔄 **Integration testing** (full ERC-4337 flow validation)
+
 *Generated from testing SimpleCacheEnabledGasLimitedPaymaster v1.0*
 *Last updated: Based on AddMember method testing*
