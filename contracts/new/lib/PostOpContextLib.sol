@@ -1,3 +1,5 @@
+// file:prepaid-gas-paymaster-contracts/contracts/new/lib/PostOpContextLib.sol
+
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
@@ -72,10 +74,7 @@ library PostOpContextLib {
             mstore(add(decoded, 96), calldataload(add(ptr, 64))) // userNullifiersState
 
             let senderBytes := calldataload(add(ptr, 96))
-            mstore(
-                add(decoded, 128),
-                and(senderBytes, 0xffffffffffffffffffffffffffffffffffffffff)
-            )
+            mstore(add(decoded, 128), shr(96, senderBytes))
         }
     }
 
@@ -94,10 +93,7 @@ library PostOpContextLib {
             mstore(add(decoded, 64), calldataload(add(ptr, 32))) // userNullifiersState
 
             let senderBytes := calldataload(add(ptr, 64))
-            mstore(
-                add(decoded, 96),
-                and(senderBytes, 0xffffffffffffffffffffffffffffffffffffffff)
-            )
+            mstore(add(decoded, 96), shr(96, senderBytes))
         }
     }
 }

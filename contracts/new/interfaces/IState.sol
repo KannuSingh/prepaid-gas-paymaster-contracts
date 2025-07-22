@@ -1,3 +1,5 @@
+// file:prepaid-gas-paymaster-contracts/contracts/new/interfaces/IState.sol
+
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
@@ -87,6 +89,8 @@ interface IState {
      * @return _maxDepth The max depth
      */
     function MAX_TREE_DEPTH() external view returns (uint32 _maxDepth);
+
+    function MIN_TREE_DEPTH() external view returns (uint32 _minDepth);
 
     /**
      * @notice Returns the configured Verifier contract for withdrawals

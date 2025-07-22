@@ -1,3 +1,5 @@
+// file:prepaid-gas-paymaster-contracts/contracts/new/core/State.sol
+
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
@@ -17,6 +19,8 @@ abstract contract State is IState {
 
     /// @inheritdoc IState
     uint32 public constant ROOT_HISTORY_SIZE = 64;
+    /// @inheritdoc IState
+    uint32 public constant MIN_TREE_DEPTH = 1;
     /// @inheritdoc IState
     uint32 public constant MAX_TREE_DEPTH = 32;
 

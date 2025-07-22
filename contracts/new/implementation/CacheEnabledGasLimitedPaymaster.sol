@@ -1,3 +1,5 @@
+// file:prepaid-gas-paymaster-contracts/contracts/new/implementation/CacheEnabledGasLimitedPaymaster.sol
+
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
@@ -8,6 +10,8 @@ import "@account-abstraction/contracts/core/UserOperationLib.sol";
 import {NullifierCacheStateLib} from "../lib/NullifierCacheStateLib.sol";
 import {PostOpContextLib} from "../lib/PostOpContextLib.sol";
 import {PrepaidGasLib} from "../lib/PrepaidGasLib.sol";
+
+// import "hardhat/console.sol";
 
 /// @title CacheEnabledGasLimitedPaymaster
 contract CacheEnabledGasLimitedPaymaster is BasePaymaster, PrepaidGasPool {
@@ -205,14 +209,15 @@ contract CacheEnabledGasLimitedPaymaster is BasePaymaster, PrepaidGasPool {
         ) {
             revert UserOpExceedsGasAmount();
         }
+
         // === Pool has members (merkleTreeSize) ===
         if (_merkleTree.size == 0 && isValidationMode) {
             revert PoolHasNoMembers();
         }
         // === Check merkleTreeDepth ===
         if (
-            (data.proof.merkleTreeDepth < MAX_TREE_DEPTH ||
-                data.proof.merkleTreeDepth > MAX_TREE_DEPTH) && isValidationMode
+            (data.proof.merkleTreeDepth < MIN_TREE_DEPTH ||
+                data.proof.merkleTreeDepth > MAX_TREE_DEPTH)
         ) {
             revert InvalidTreeDepth();
         }
@@ -317,38 +322,38 @@ contract CacheEnabledGasLimitedPaymaster is BasePaymaster, PrepaidGasPool {
         uint256 nullifier,
         bytes32 userOpHash,
         address sender,
-        uint256 userNullifiersState
+        uint256 currentNullifiersState
     ) internal {
         // 1. Deduct gas from the new nullifier
         nullifierGasUsage[nullifier] += totalGasCost;
-
-        uint8 currentCount = userNullifiersState.getActivatedNullifierCount();
-
+        uint8 currentCount = currentNullifiersState
+            .getActivatedNullifierCount();
         if (currentCount == 0) {
             // First nullifier
             bytes32 nullifierSlotKey = keccak256(abi.encode(sender, 0));
             userNullifiers[nullifierSlotKey] = nullifier;
-            userNullifiersStates[sender] = userNullifiersState
+            userNullifiersStates[sender] = currentNullifiersState
                 .initializeFirstNullifier();
+
             emit UserOpSponsored(userOpHash, sender, totalGasCost);
             return;
         }
 
-        bool hasExhaustedSlot = userNullifiersState
+        bool hasExhaustedSlot = currentNullifiersState
             .getHasAvailableExhaustedSlot();
 
         if (hasExhaustedSlot) {
             // Reuse exhausted slot
-            uint8 slotIndex = userNullifiersState.getExhaustedSlotIndex();
+            uint8 slotIndex = currentNullifiersState.getExhaustedSlotIndex();
             bytes32 nullifierSlotKey = keccak256(abi.encode(sender, slotIndex));
             userNullifiers[nullifierSlotKey] = nullifier;
-            userNullifiersStates[sender] = userNullifiersState
+            userNullifiersStates[sender] = currentNullifiersState
                 .reuseExhaustedSlot();
         } else {
             // Second nullifier (currentCount == 1)
             bytes32 nullifierSlotKey = keccak256(abi.encode(sender, 1));
             userNullifiers[nullifierSlotKey] = nullifier;
-            userNullifiersStates[sender] = userNullifiersState
+            userNullifiersStates[sender] = currentNullifiersState
                 .addSecondNullifier();
         }
 
@@ -445,6 +450,12 @@ contract CacheEnabledGasLimitedPaymaster is BasePaymaster, PrepaidGasPool {
     ) internal virtual override(PrepaidGasPool) {
         if (msg.value != _amount) revert InsufficientValue();
         _depositToEntryPoint(msg.value);
+    }
+
+    function getMessageHash(
+        PackedUserOperation calldata userOp
+    ) public view returns (bytes32) {
+        return PrepaidGasLib._getMessageHash(userOp, entryPoint);
     }
 
     function _push(
