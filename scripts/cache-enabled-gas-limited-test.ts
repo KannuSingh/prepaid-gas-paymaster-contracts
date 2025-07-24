@@ -1,0 +1,541 @@
+import hre from 'hardhat';
+import {
+  concat,
+  encodeAbiParameters,
+  decodeAbiParameters,
+  Hex,
+  http,
+  parseAbiParameters,
+  parseEther,
+  numberToHex,
+  toHex,
+  hexToString,
+  keccak256,
+  formatEther,
+  encodePacked,
+  toBytes,
+  pad,
+  concatHex,
+} from 'viem';
+import { Identity, Group, generateProof } from '@semaphore-protocol/core';
+import {
+  createBundlerClient,
+  entryPoint07Address,
+  GetPaymasterDataParameters,
+  GetPaymasterStubDataParameters,
+  UserOperation,
+} from 'viem/account-abstraction';
+import { toSimpleSmartAccount } from 'permissionless/accounts';
+import { getPackedUserOperation } from 'permissionless/utils';
+import { createSmartAccountClient } from 'permissionless';
+import { poseidon2 } from 'poseidon-lite';
+
+// Helper function to calculate user state key locally
+function getUserStateKey(poolId: bigint, sender: `0x${string}`): `0x${string}` {
+  return keccak256(encodeAbiParameters(parseAbiParameters('uint256, address'), [poolId, sender]));
+}
+
+async function main() {
+  const [wallet1] = await hre.viem.getWalletClients();
+  const publicClient = await hre.viem.getPublicClient();
+
+  // Deploy CacheEnabledGasLimitedPaymaster
+  const paymaster = await hre.viem.deployContract(
+    'CacheEnabledGasLimitedPaymaster',
+    [entryPoint07Address, '0x6C42599435B82121794D835263C846384869502d'],
+    {
+      libraries: { PoseidonT3: '0xB43122Ecb241DD50062641f089876679fd06599a' },
+    }
+  );
+
+  console.log(`🚀 CacheEnabledGasLimitedPaymaster deployed at: ${paymaster.address}`);
+
+  const joiningFee = parseEther('1');
+  await paymaster.write.createPool([joiningFee]);
+  const poolId = 1n;
+
+  // Initial setup with dummy identity
+  const dummyId = new Identity(await wallet1.signMessage({ message: 'dummy' }));
+  const dummyId2 = new Identity(await wallet1.signMessage({ message: 'dummy2' }));
+  let localPool = new Group([dummyId.commitment, dummyId2.commitment]);
+  await paymaster.write.addMember([poolId, dummyId.commitment], { value: joiningFee });
+  await paymaster.write.addMember([poolId, dummyId2.commitment], { value: joiningFee });
+
+  const smartAccount = await toSimpleSmartAccount({
+    owner: wallet1,
+    client: publicClient,
+    entryPoint: { address: entryPoint07Address, version: '0.7' },
+  });
+
+  const bundlerClient = createBundlerClient({
+    client: publicClient,
+    transport: http('http://localhost:4337'),
+  });
+
+  // Track test data
+  const identities = [];
+  const successfulTransactions = [];
+  const failedTransactions = [];
+  const proofGenerationTimes: number[] = [];
+  const gasConsumption = [];
+
+  // Test with multiple transactions to demonstrate caching behavior
+  for (let i = 1; i <= 5; i++) {
+    try {
+      console.log(`\n🆔 Transaction ${i}/5...`);
+
+      let identity;
+      let isNewIdentity = false;
+
+      if (i === 1) {
+        // First transaction - create new identity
+        identity = new Identity(await wallet1.signMessage({ message: `identity-${i}` }));
+        identities.push(identity);
+        isNewIdentity = true;
+
+        console.log(`💰 Adding identity ${i} to pool...`);
+        await paymaster.write.addMember([poolId, identity.commitment], { value: joiningFee });
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        localPool.addMember(identity.commitment);
+        console.log(`   New identity added - will require ZK proof`);
+      } else if (i <= 3) {
+        // Transactions 2-3: Use same identity (should be cached)
+        identity = identities[0];
+        console.log(`   Reusing identity from transaction 1 - should use cached validation`);
+      } else {
+        // Transactions 4-5: Create new identity
+        identity = new Identity(await wallet1.signMessage({ message: `identity-${i}` }));
+        identities.push(identity);
+        isNewIdentity = true;
+
+        console.log(`💰 Adding identity ${i} to pool...`);
+        await paymaster.write.addMember([poolId, identity.commitment], { value: joiningFee });
+        await new Promise((resolve) => setTimeout(resolve, 2000));
+        localPool.addMember(identity.commitment);
+        console.log(`   New identity added - will require ZK proof`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2000)); // 2 second delay
+      // Check cache status before transaction using new userStates mapping
+      const userStateKey = getUserStateKey(poolId, smartAccount.address);
+      const userState = await paymaster.read.userStates([userStateKey]);
+      const isAlreadyCached = userState[0] > 0; // activatedNullifierCount > 0
+      console.log(
+        `   Cache status: ${isAlreadyCached ? 'CACHED' : 'NOT CACHED'} (count: ${userState[0]})`
+      );
+
+      // Determine the correct paymaster context based on cache status
+      let paymasterContext: Hex;
+      if (isAlreadyCached) {
+        // For cached senders, only pass poolId
+        paymasterContext = encodeAbiParameters(parseAbiParameters('uint256'), [poolId]);
+        console.log(`   Using CACHED context (poolId only)`);
+      } else {
+        // For new senders, pass poolId and identity
+        paymasterContext = encodeAbiParameters(parseAbiParameters('uint256, bytes'), [
+          poolId,
+          toHex(identity.export()),
+        ]);
+        console.log(`   Using ZK PROOF context (poolId + identity)`);
+      }
+
+      console.log(`🚀 Submitting UserOp ${i}/5...`);
+
+      const smartAccountClient = createSmartAccountClient({
+        client: publicClient,
+        account: smartAccount,
+        bundlerTransport: http('http://localhost:4337'),
+        paymaster: {
+          async getPaymasterStubData(parameters: GetPaymasterStubDataParameters) {
+            // Check cache status using new userStates mapping
+            const userStateKey = getUserStateKey(poolId, smartAccount.address);
+            const userState = await paymaster.read.userStates([userStateKey]);
+            const isCached = userState[0] > 0; // activatedNullifierCount > 0
+
+            // Construct the UserOperation for the contract call
+            const userOp: UserOperation<'0.7'> = {
+              sender: parameters.sender,
+              nonce: parameters.nonce,
+              callData: parameters.callData || '0x',
+              callGasLimit: parameters.callGasLimit || 0n,
+              verificationGasLimit: parameters.verificationGasLimit || 0n,
+              preVerificationGas: parameters.preVerificationGas || 0n,
+              maxFeePerGas: parameters.maxFeePerGas || 0n,
+              maxPriorityFeePerGas: parameters.maxPriorityFeePerGas || 0n,
+              signature: '0x',
+              // paymasterAndData: '0x',
+            };
+
+            // Pack the UserOperation as required by the contract
+            const packedUserOp = getPackedUserOperation(userOp);
+
+            // Use the contract's getPaymasterStubData function with packed UserOp
+            const encodedContext = encodeAbiParameters(parseAbiParameters('uint256'), [poolId]);
+            const stubData = await paymaster.read.getPaymasterStubData([
+              packedUserOp,
+              encodedContext,
+            ]);
+
+            console.log(
+              `   Stub data: ${stubData.length} bytes (${isCached ? 'CACHED' : 'ZK PROOF'})`
+            );
+
+            return {
+              paymaster: paymaster.address,
+              paymasterData: stubData,
+              paymasterPostOpGasLimit: isCached ? 118500n : 78000n,
+            };
+          },
+          async getPaymasterData(parameters: GetPaymasterDataParameters) {
+            const context = parameters.context as Hex;
+
+            // Determine context format by checking the length
+            let decodedPoolId: bigint;
+            let shouldUseCachedPath = false;
+
+            try {
+              if (context.length === 66) {
+                // 32 bytes encoded = 66 hex chars (including 0x)
+                // Context contains only poolId (cached path)
+                decodedPoolId = decodeAbiParameters(parseAbiParameters('uint256'), context)[0];
+
+                // Check if sender is actually cached using new userStates mapping
+                const userStateKey = getUserStateKey(
+                  decodedPoolId,
+                  parameters.sender as `0x${string}`
+                );
+                const userState = await paymaster.read.userStates([userStateKey]);
+                shouldUseCachedPath = userState[0] > 0; // activatedNullifierCount > 0
+
+                console.log(
+                  `   Context: poolId only, cached count: ${userState[0]}, shouldUseCachedPath: ${shouldUseCachedPath}`
+                );
+              } else {
+                // Context contains poolId + identity (ZK proof path)
+                const [poolId, identityBytes] = decodeAbiParameters(
+                  parseAbiParameters('uint256, bytes'),
+                  context
+                );
+                decodedPoolId = poolId;
+                shouldUseCachedPath = false;
+
+                console.log(
+                  `   Context: poolId + identity, shouldUseCachedPath: ${shouldUseCachedPath}`
+                );
+              }
+            } catch (error) {
+              console.error(`   Error decoding context:`, error);
+              throw error;
+            }
+
+            // If we should use cached path, generate cached paymaster data
+            if (shouldUseCachedPath) {
+              console.log(`   🚀 Using CACHED validation path`);
+
+              // Get user state to determine range
+              const userStateKey = getUserStateKey(
+                decodedPoolId,
+                parameters.sender as `0x${string}`
+              );
+              const userState = await paymaster.read.userStates([userStateKey]);
+              const activatedCount = Number(userState[0]);
+
+              // Use all available cached nullifiers (0 to count-1)
+              const startIndex = 0;
+              const endIndex = activatedCount - 1;
+
+              // Generate cached paymaster data: poolId + mode + startIndex + endIndex
+              const cachedData = encodePackedPaymasterData(decodedPoolId, 0, startIndex, endIndex);
+
+              return {
+                paymaster: paymaster.address,
+                paymasterData: cachedData,
+              };
+            }
+
+            // ZK proof path - we need the identity from context
+            console.log(`   🔬 Using ZK PROOF validation path - generating proof...`);
+
+            // Re-decode to get identity (we know it's the full context format)
+            const [, identityBytes] = decodeAbiParameters(
+              parseAbiParameters('uint256, bytes'),
+              context
+            );
+
+            const identityStr = hexToString(identityBytes);
+            const identityObj = Identity.import(identityStr);
+
+            const userOp: UserOperation<'0.7'> = {
+              ...parameters,
+              callData: parameters.callData,
+              callGasLimit: parameters.callGasLimit || 0n,
+              maxFeePerGas: parameters.maxFeePerGas || 0n,
+              maxPriorityFeePerGas: parameters.maxPriorityFeePerGas || 0n,
+              nonce: parameters.nonce,
+              preVerificationGas: parameters.preVerificationGas || 0n,
+              sender: parameters.sender,
+              signature: '0x',
+              verificationGasLimit: parameters.verificationGasLimit || 0n,
+            };
+
+            const packed = getPackedUserOperation(userOp);
+            const msgHash = await paymaster.read.getMessageHash([packed]);
+            const latestRootInfo = await paymaster.read.getLatestValidRootInfo([decodedPoolId]);
+
+            const proofStartTime = Date.now();
+            const proof = await generateProof(
+              identityObj,
+              localPool,
+              BigInt(msgHash),
+              decodedPoolId
+            );
+            const proofEndTime = Date.now();
+            const proofGenerationTime = proofEndTime - proofStartTime;
+
+            console.log(`   ⚡ Proof generated in ${proofGenerationTime}ms`);
+            proofGenerationTimes.push(proofGenerationTime);
+
+            const paymasterData = await generatePaymasterData(decodedPoolId, latestRootInfo[1], {
+              merkleTreeDepth: BigInt(proof.merkleTreeDepth),
+              merkleTreeRoot: BigInt(proof.merkleTreeRoot),
+              nullifier: BigInt(proof.nullifier),
+              message: BigInt(proof.message),
+              scope: BigInt(proof.scope),
+              points: proof.points as [
+                bigint,
+                bigint,
+                bigint,
+                bigint,
+                bigint,
+                bigint,
+                bigint,
+                bigint,
+              ],
+            });
+
+            return {
+              paymaster: paymaster.address,
+              paymasterData,
+            };
+          },
+        },
+        paymasterContext,
+      });
+
+      const request = await smartAccountClient.prepareUserOperation({
+        calls: [
+          {
+            to: '0xF892dc5bBef591D61dD6d75Dfc963c371E723bA4',
+            data: '0xdeedbeed',
+            value: 0n,
+          },
+        ],
+        paymasterContext,
+      });
+      console.log({
+        paymasterPostOpGasLimit: request.paymasterPostOpGasLimit,
+        paymasterVerificationGasLimit: request.paymasterVerificationGasLimit,
+      });
+      const signature = await smartAccount.signUserOperation(request);
+      const userOpHash = await bundlerClient.sendUserOperation({
+        entryPointAddress: entryPoint07Address,
+        ...request,
+        signature,
+      });
+
+      const receipt = await bundlerClient.waitForUserOperationReceipt({ hash: userOpHash });
+
+      if (receipt.success) {
+        console.log(`✅ Transaction ${i} successful - Hash: ${userOpHash}`);
+        successfulTransactions.push(i);
+
+        // Calculate gas consumption
+        const gasUsed = receipt.actualGasUsed;
+        const gasPrice = receipt.actualGasCost;
+
+        gasConsumption.push({
+          transaction: i,
+          gasUsed: Number(gasUsed),
+          isZKProof: !isAlreadyCached,
+          isCached: isAlreadyCached,
+        });
+
+        console.log(`   💰 Gas used: ${gasUsed.toLocaleString()} units`);
+        console.log(`   📊 Validation type: ${isAlreadyCached ? 'CACHED' : 'ZK PROOF'}`);
+      } else {
+        console.log(`❌ Transaction ${i} failed - Hash: ${userOpHash}`);
+        failedTransactions.push(i);
+      }
+
+      // Check cache status after transaction using new userStates mapping
+      const userStateAfter = await paymaster.read.userStates([userStateKey]);
+      if (userStateAfter[1] > userState[0]) {
+        console.log(`   ✅ New nullifier cached! Count: ${userState[0]} → ${userStateAfter[1]}`);
+      }
+
+      // Check pool status
+      const poolDeposits = await paymaster.read.getPoolDeposits([poolId]);
+      const poolSize = await paymaster.read.getMerkleTreeSize([poolId]);
+      console.log(`   Pool size: ${poolSize}, Total deposits: ${formatEther(poolDeposits)} ETH`);
+    } catch (error) {
+      console.log(`❌ Transaction ${i} failed with error:`, error);
+
+      failedTransactions.push(i);
+      process.exit(1);
+    }
+  }
+
+  // Final analysis
+  console.log('\n📊 FINAL SUMMARY:');
+  console.log(`👥 Total identities created: ${identities.length}`);
+  console.log(`✅ Successful transactions: ${successfulTransactions.length}/5`);
+  console.log(`❌ Failed transactions: ${failedTransactions.length}/5`);
+
+  if (successfulTransactions.length > 0) {
+    console.log(`Successful transactions: ${successfulTransactions.join(', ')}`);
+  }
+
+  if (failedTransactions.length > 0) {
+    console.log(`Failed transactions: ${failedTransactions.join(', ')}`);
+  }
+
+  // Gas consumption analysis
+  console.log('\n⛽ GAS CONSUMPTION ANALYSIS:');
+  const zkProofTransactions = gasConsumption.filter((tx) => tx.isZKProof);
+  const cachedTransactions = gasConsumption.filter((tx) => tx.isCached);
+
+  if (zkProofTransactions.length > 0) {
+    const avgZKGas =
+      zkProofTransactions.reduce((sum, tx) => sum + tx.gasUsed, 0) / zkProofTransactions.length;
+
+    console.log(`ZK Proof transactions (${zkProofTransactions.length}):`);
+    console.log(`  Average gas: ${Math.round(avgZKGas).toLocaleString()} units`);
+  }
+
+  if (cachedTransactions.length > 0) {
+    const avgCachedGas =
+      cachedTransactions.reduce((sum, tx) => sum + tx.gasUsed, 0) / cachedTransactions.length;
+
+    console.log(`Cached transactions (${cachedTransactions.length}):`);
+    console.log(`  Average gas: ${Math.round(avgCachedGas).toLocaleString()} units`);
+
+    if (zkProofTransactions.length > 0) {
+      const gasSavings =
+        zkProofTransactions.reduce((sum, tx) => sum + tx.gasUsed, 0) / zkProofTransactions.length -
+        avgCachedGas;
+
+      console.log(`💰 SAVINGS with caching:`);
+      console.log(
+        `  Gas saved: ${Math.round(gasSavings).toLocaleString()} units (${((gasSavings / (zkProofTransactions.reduce((sum, tx) => sum + tx.gasUsed, 0) / zkProofTransactions.length)) * 100).toFixed(1)}%)`
+      );
+    }
+  }
+
+  // Individual transaction breakdown
+  console.log('\n📋 INDIVIDUAL TRANSACTION BREAKDOWN:');
+
+  // Performance analysis
+  if (proofGenerationTimes.length > 0) {
+    const avgProofTime =
+      proofGenerationTimes.reduce((a, b) => a + b, 0) / proofGenerationTimes.length;
+    const minProofTime = Math.min(...proofGenerationTimes);
+    const maxProofTime = Math.max(...proofGenerationTimes);
+
+    console.log('\n⚡ PROOF GENERATION PERFORMANCE:');
+    console.log(`Average time: ${avgProofTime.toFixed(2)}ms`);
+    console.log(`Fastest: ${minProofTime}ms`);
+    console.log(`Slowest: ${maxProofTime}ms`);
+    console.log(`Total ZK proof transactions: ${proofGenerationTimes.length}`);
+    console.log(`Total cached transactions: ${gasConsumption.filter((tx) => tx.isCached).length}`);
+
+    // Individual timing breakdown
+    console.log('\n📋 Individual Proof Times:');
+    let proofIndex = 0;
+    gasConsumption.forEach((tx) => {
+      if (tx.isZKProof) {
+        console.log(
+          `  Transaction ${tx.transaction}: ${proofGenerationTimes[proofIndex]}ms (ZK PROOF)`
+        );
+        proofIndex++;
+      } else {
+        console.log(`  Transaction ${tx.transaction}: 0ms (CACHED)`);
+      }
+    });
+  }
+
+  // Final contract state
+  const finalPoolSize = await paymaster.read.getMerkleTreeSize([poolId]);
+  const finalPoolDeposits = await paymaster.read.getPoolDeposits([poolId]);
+  const totalUsersDeposit = await paymaster.read.totalUsersDeposit();
+  const paymasterBalance = await paymaster.read.getDeposit();
+  const revenue = await paymaster.read.getRevenue();
+
+  // Final user state using new mapping
+  const finalUserStateKey = getUserStateKey(poolId, smartAccount.address);
+  const finalUserState = await paymaster.read.userStates([finalUserStateKey]);
+
+  console.log(`\n📈 FINAL CONTRACT STATE:`);
+  console.log(`Pool size: ${finalPoolSize} members`);
+  console.log(`Pool deposits: ${formatEther(finalPoolDeposits)} ETH`);
+  console.log(`Total users deposit: ${formatEther(totalUsersDeposit)} ETH`);
+  console.log(`Paymaster balance: ${formatEther(paymasterBalance)} ETH`);
+  console.log(`💰 Paymaster revenue: ${formatEther(revenue)} ETH`);
+  console.log(`User cached nullifiers: ${finalUserState[0]}`);
+}
+
+async function generatePaymasterData(
+  poolId: bigint,
+  merkleRootIndex: number,
+  proof: {
+    merkleTreeDepth: bigint;
+    merkleTreeRoot: bigint;
+    nullifier: bigint;
+    message: bigint;
+    scope: bigint;
+    points: [bigint, bigint, bigint, bigint, bigint, bigint, bigint, bigint];
+  }
+): Promise<Hex> {
+  const config = BigInt(merkleRootIndex) | (BigInt(0) << 32n);
+  const configBytes = numberToHex(config, { size: 32 });
+  const poolIdBytes = encodeAbiParameters([{ type: 'uint256' }], [poolId]);
+  const proofBytes = encodeAbiParameters(
+    [
+      {
+        name: 'proof',
+        type: 'tuple',
+        components: [
+          { name: 'merkleTreeDepth', type: 'uint256' },
+          { name: 'merkleTreeRoot', type: 'uint256' },
+          { name: 'nullifier', type: 'uint256' },
+          { name: 'message', type: 'uint256' },
+          { name: 'scope', type: 'uint256' },
+          { name: 'points', type: 'uint256[8]' },
+        ],
+      },
+    ],
+    [proof]
+  );
+  return concat([configBytes, poolIdBytes, proofBytes]);
+}
+
+function encodePackedPaymasterData(
+  poolId: bigint,
+  mode: number,
+  startIndex: number,
+  endIndex: number
+) {
+  // Encode 32-byte poolId
+  const poolIdBytes = toHex(poolId, { size: 32 });
+
+  // Encode 1-byte mode, startIndex, endIndex
+  const modeByte = toHex(mode, { size: 1 });
+  const startByte = toHex(startIndex, { size: 1 });
+  const endByte = toHex(endIndex, { size: 1 });
+
+  // Concatenate to match encodePacked
+  return concatHex([poolIdBytes, modeByte, startByte, endByte]);
+}
+
+main().catch((err) => {
+  console.error('💥 Script failed:', err);
+  process.exit(1);
+});
