@@ -1,3 +1,4 @@
+// file:prepaid-gas-paymaster-contracts/contracts/new/core/BasePaymaster.sol
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
@@ -5,19 +6,20 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@account-abstraction/contracts/interfaces/IPaymaster.sol";
 import "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 import "@account-abstraction/contracts/interfaces/IEntryPoint.sol";
-import {BaseErrors} from "../errors/BaseErrors.sol";
-import "./Constants.sol"; // Ensure this import exists if used
 
 /// @title BasePaymaster
 /// @notice Secure paymaster base without general withdrawal capabilities (stake withdrawal is allowed)
-/// @dev Only allows controlled deposits through pool joining mechanism for UserOp payments
 abstract contract BasePaymaster is IPaymaster, Ownable {
     IEntryPoint public immutable entryPoint;
+
+    error InvalidEntryPoint();
+    error WithdrawalNotAllowed();
+    error UnauthorizedCaller();
 
     // ============ Constructor ============
     constructor(IEntryPoint _entryPoint) Ownable(msg.sender) {
         if (address(_entryPoint) == address(0)) {
-            revert BaseErrors.InvalidEntryPoint();
+            revert InvalidEntryPoint();
         }
 
         _validateEntryPointInterface(_entryPoint);
@@ -35,7 +37,7 @@ abstract contract BasePaymaster is IPaymaster, Ownable {
                 type(IEntryPoint).interfaceId
             )
         ) {
-            revert BaseErrors.InvalidEntryPoint(); // Use the specific error
+            revert InvalidEntryPoint(); // Use the specific error
         }
     }
 
@@ -114,19 +116,27 @@ abstract contract BasePaymaster is IPaymaster, Ownable {
     }
 
     /// @notice Withdraw value from the deposit (owner-controlled, but default implementation prevents general withdrawal)
-    /// @dev This function is intentionally implemented to revert to enforce "no general withdrawal" policy.
-    /// Derived contracts that need specific withdrawal logic must override this.
     /// @param withdrawAddress Target to send to
     /// @param amount Amount to withdraw
     function withdrawTo(
         address payable withdrawAddress,
         uint256 amount
-    ) external virtual onlyOwner {
+    ) external onlyOwner {
+        _withdrawTo(withdrawAddress, amount);
+    }
+
+    /// @dev This function is intentionally implemented to revert to enforce "no general withdrawal" policy.
+    /// Derived contracts that need specific withdrawal logic must override this.
+    /// @param withdrawAddress Target to send to
+    /// @param amount Amount to withdraw
+    function _withdrawTo(
+        address payable withdrawAddress,
+        uint256 amount
+    ) internal virtual {
         (withdrawAddress, amount);
-        // Added onlyOwner as stake withdrawals are owner-only
         // This default implementation prevents direct withdrawals from the paymaster's deposit.
         // Funds are expected to be managed via the pool mechanisms.
-        revert BaseErrors.WithdrawalNotAllowed();
+        revert WithdrawalNotAllowed();
     }
 
     // ============ Internal Utility Functions ============
@@ -134,7 +144,7 @@ abstract contract BasePaymaster is IPaymaster, Ownable {
     /// @notice Ensures that the caller is the EntryPoint contract.
     function _requireFromEntryPoint() internal view {
         if (msg.sender != address(entryPoint)) {
-            revert BaseErrors.UnauthorizedCaller();
+            revert UnauthorizedCaller();
         }
     }
 }

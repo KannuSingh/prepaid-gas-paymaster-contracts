@@ -1,9 +1,11 @@
+// file:prepaid-gas-paymaster-contracts/contracts/new/interfaces/IVerifier.sol
+
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-/// @title IPrivacyVerifier
-/// @notice Interface for pool membership proof verification
-interface IPoolMembershipProofVerifier {
+/// @title IVerifier
+/// @notice Interface of the Groth16 verifier contracts
+interface IVerifier {
     /// @notice Verify a privacy proof
     /// @param _pA Proof point A
     /// @param _pB Proof point B
