@@ -82,12 +82,4 @@ abstract contract PrepaidGasPool is State, IPrepaidGasPool {
      * @param _value The amount of asset being received
      */
     function _pull(address _sender, uint256 _value) internal virtual;
-
-    /**
-     * @notice Handle sending an asset
-     * @dev To be implemented by an asset specific contract
-     * @param _recipient The address of the user receiving funds
-     * @param _value The amount of asset being sent
-     */
-    function _push(address _recipient, uint256 _value) internal virtual;
 }

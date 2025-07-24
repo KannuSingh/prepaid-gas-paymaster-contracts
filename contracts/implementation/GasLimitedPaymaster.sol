@@ -16,11 +16,14 @@ contract GasLimitedPaymaster is BasePaymaster, PrepaidGasPool {
     /*///////////////////////////////////////////////////////////////
                               EVENTS
   //////////////////////////////////////////////////////////////*/
-    event UserOpSponsored(
-        bytes32 indexed userOpHash,
+    event UserOpSponsoredWithNullifier(
         address indexed sender,
-        uint256 actualGasCost
+        bytes32 indexed userOpHash,
+        uint256 actualGasCost,
+        uint256 nullifierUsed
     );
+    event RevenueWithdrawn(address withdrawAddress, uint256 amount);
+
     /*///////////////////////////////////////////////////////////////
                               ERRORS
     //////////////////////////////////////////////////////////////*/
@@ -163,7 +166,12 @@ contract GasLimitedPaymaster is BasePaymaster, PrepaidGasPool {
         // Deduct from the global tracker of user deposits for revenue calculation.
         totalDeposit -= totalGasCost;
 
-        emit UserOpSponsored(userOpHash, sender, totalGasCost);
+        emit UserOpSponsoredWithNullifier(
+            sender,
+            userOpHash,
+            totalGasCost,
+            nullifier
+        );
     }
 
     function _pull(
@@ -174,8 +182,25 @@ contract GasLimitedPaymaster is BasePaymaster, PrepaidGasPool {
         _depositToEntryPoint(msg.value);
     }
 
-    function _push(
-        address _recipient,
-        uint256 _value
-    ) internal virtual override(PrepaidGasPool) {}
+    /// @notice Override to allow revenue withdrawal
+    function _withdrawTo(
+        address payable withdrawAddress,
+        uint256 amount
+    ) internal virtual override(BasePaymaster) {
+        uint256 currentEntryPointDeposit = getDeposit();
+        uint256 revenue = currentEntryPointDeposit - totalDeposit;
+
+        if (amount == 0 || amount > revenue) {
+            revert WithdrawalNotAllowed();
+        }
+
+        entryPoint.withdrawTo(withdrawAddress, amount);
+        emit RevenueWithdrawn(withdrawAddress, amount);
+    }
+
+    /// @notice Get available revenue
+    function getRevenue() public view returns (uint256) {
+        uint256 currentEntryPointDeposit = getDeposit();
+        return currentEntryPointDeposit - totalDeposit;
+    }
 }

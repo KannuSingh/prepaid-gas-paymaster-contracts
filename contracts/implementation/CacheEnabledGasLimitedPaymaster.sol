@@ -22,9 +22,16 @@ contract CacheEnabledGasLimitedPaymaster is BasePaymaster, PrepaidGasPool {
                               EVENTS
   //////////////////////////////////////////////////////////////*/
     event UserOpSponsored(
-        bytes32 indexed userOpHash,
         address indexed sender,
+        bytes32 indexed userOpHash,
         uint256 actualGasCost
+    );
+    event RevenueWithdrawn(address withdrawAddress, uint256 amount);
+    event NullifierConsumed(
+        bytes32 indexed userOpHash,
+        uint256 indexed nullifier,
+        uint256 gasUsed,
+        uint8 index
     );
 
     /*///////////////////////////////////////////////////////////////
@@ -295,6 +302,12 @@ contract CacheEnabledGasLimitedPaymaster is BasePaymaster, PrepaidGasPool {
                 activationContext.sender,
                 activationContext.userNullifiersState
             );
+            totalDeposit -= totalGasCost;
+            emit UserOpSponsored(
+                activationContext.sender,
+                activationContext.userOpHash,
+                totalGasCost
+            );
         } else if (nullifierMode == PostOpContextLib.NullifierMode.CACHED) {
             PostOpContextLib.CachedContext
                 memory cachedContext = PostOpContextLib.decodeCachedContext(
@@ -309,11 +322,16 @@ contract CacheEnabledGasLimitedPaymaster is BasePaymaster, PrepaidGasPool {
                 cachedContext.sender,
                 cachedContext.userNullifiersState
             );
+            totalDeposit -= totalGasCost;
+            emit UserOpSponsored(
+                cachedContext.sender,
+                cachedContext.userOpHash,
+                totalGasCost
+            );
         } else {
+            // should never happen
             revert("Unknown NullifierMode");
         }
-
-        totalDeposit -= totalGasCost;
     }
 
     /// @notice Handle activation postOp with proper state initialization
@@ -334,8 +352,7 @@ contract CacheEnabledGasLimitedPaymaster is BasePaymaster, PrepaidGasPool {
             userNullifiers[nullifierSlotKey] = nullifier;
             userNullifiersStates[sender] = currentNullifiersState
                 .initializeFirstNullifier();
-
-            emit UserOpSponsored(userOpHash, sender, totalGasCost);
+            emit NullifierConsumed(userOpHash, nullifier, totalGasCost, 0);
             return;
         }
 
@@ -349,15 +366,20 @@ contract CacheEnabledGasLimitedPaymaster is BasePaymaster, PrepaidGasPool {
             userNullifiers[nullifierSlotKey] = nullifier;
             userNullifiersStates[sender] = currentNullifiersState
                 .reuseExhaustedSlot();
+            emit NullifierConsumed(
+                userOpHash,
+                nullifier,
+                totalGasCost,
+                slotIndex
+            );
         } else {
             // Second nullifier (currentCount == 1)
             bytes32 nullifierSlotKey = keccak256(abi.encode(sender, 1));
             userNullifiers[nullifierSlotKey] = nullifier;
             userNullifiersStates[sender] = currentNullifiersState
                 .addSecondNullifier();
+            emit NullifierConsumed(userOpHash, nullifier, totalGasCost, 2);
         }
-
-        emit UserOpSponsored(userOpHash, sender, totalGasCost);
     }
 
     /// @notice Handle cached postOp with proper activeNullifierIndex management
@@ -370,13 +392,13 @@ contract CacheEnabledGasLimitedPaymaster is BasePaymaster, PrepaidGasPool {
         // Process consumption and update state
         uint256 updatedState = _processNullifierConsumption(
             sender,
+            userOpHash,
             totalGasCost,
             userNullifiersState
         );
 
         // Update final state
         userNullifiersStates[sender] = updatedState;
-        emit UserOpSponsored(userOpHash, sender, totalGasCost);
     }
 
     /// @notice Internal function to process nullifier consumption with wraparound logic
@@ -385,6 +407,7 @@ contract CacheEnabledGasLimitedPaymaster is BasePaymaster, PrepaidGasPool {
     /// @return updatedState The updated nullifier state flags
     function _processNullifierConsumption(
         address sender,
+        bytes32 userOpHash,
         uint256 totalGasCost,
         uint256 currentUserNullifiersState
     ) internal returns (uint256 updatedState) {
@@ -399,48 +422,32 @@ contract CacheEnabledGasLimitedPaymaster is BasePaymaster, PrepaidGasPool {
             uint8 currentIndex = (startIndex + i) %
                 Constants.MAX_NULLIFIERS_PER_ADDRESS;
             bytes32 nullifierKey = keccak256(abi.encode(sender, currentIndex));
-            bool wasExhausted;
+            uint256 nullifier = userNullifiers[nullifierKey];
+            if (nullifier == 0) {
+                continue; // Skip
+            }
 
-            (remainingCost, wasExhausted) = _consumeFromNullifier(
-                userNullifiers[nullifierKey],
-                remainingCost
+            uint256 used = nullifierGasUsage[nullifier];
+            uint256 available = JOINING_AMOUNT - used;
+            uint256 toConsume = remainingCost > available
+                ? available
+                : remainingCost;
+
+            // Update gas usage
+            nullifierGasUsage[nullifier] += toConsume;
+            remainingCost = remainingCost - toConsume;
+            emit NullifierConsumed(
+                userOpHash,
+                nullifier,
+                toConsume,
+                currentIndex
             );
 
-            // Update state if slot was exhausted
-            if (wasExhausted) {
+            if (nullifierGasUsage[nullifier] >= JOINING_AMOUNT) {
+                // not marking the nullifier 0, for gas savings
+                // userNullifiers[nullifierSlotKey] = 0;
                 updatedState = updatedState.markSlotAsExhausted(currentIndex);
             }
-        }
-    }
-
-    /// @notice Consume gas from a specific nullifier slot
-    /// @param nullifier Storage reference to user nullifiers array
-    /// @param remainingCost Remaining gas cost to consume
-    /// @return newRemainingCost Updated remaining cost after consumption
-    /// @return wasExhausted Whether the slot was exhausted and cleared
-    function _consumeFromNullifier(
-        uint256 nullifier,
-        uint256 remainingCost
-    ) internal returns (uint256 newRemainingCost, bool wasExhausted) {
-        if (nullifier == 0) {
-            return (remainingCost, false); // Skip empty slots
-        }
-
-        uint256 used = nullifierGasUsage[nullifier];
-        uint256 available = JOINING_AMOUNT - used;
-        uint256 toConsume = remainingCost > available
-            ? available
-            : remainingCost;
-
-        // Update gas usage
-        nullifierGasUsage[nullifier] += toConsume;
-        newRemainingCost = remainingCost - toConsume;
-
-        // Check if slot is now exhausted
-        if (nullifierGasUsage[nullifier] >= JOINING_AMOUNT) {
-            // not marking the nullifier 0, for gas savings
-            // userNullifiers[nullifierSlotKey] = 0;
-            wasExhausted = true;
         }
     }
 
@@ -458,8 +465,25 @@ contract CacheEnabledGasLimitedPaymaster is BasePaymaster, PrepaidGasPool {
         return PrepaidGasLib._getMessageHash(userOp, entryPoint);
     }
 
-    function _push(
-        address _recipient,
-        uint256 _value
-    ) internal virtual override(PrepaidGasPool) {}
+    /// @notice Override to allow revenue withdrawal
+    function _withdrawTo(
+        address payable withdrawAddress,
+        uint256 amount
+    ) internal virtual override(BasePaymaster) {
+        uint256 currentEntryPointDeposit = getDeposit();
+        uint256 revenue = currentEntryPointDeposit - totalDeposit;
+
+        if (amount == 0 || amount > revenue) {
+            revert WithdrawalNotAllowed();
+        }
+
+        entryPoint.withdrawTo(withdrawAddress, amount);
+        emit RevenueWithdrawn(withdrawAddress, amount);
+    }
+
+    /// @notice Get available revenue
+    function getRevenue() public view returns (uint256) {
+        uint256 currentEntryPointDeposit = getDeposit();
+        return currentEntryPointDeposit - totalDeposit;
+    }
 }
