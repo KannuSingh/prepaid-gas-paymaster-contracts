@@ -1,11 +1,10 @@
+import { Identity } from '@semaphore-protocol/core';
 import hre from 'hardhat';
-import { parseEther } from 'viem';
-import { entryPoint07Address } from 'viem/account-abstraction';
 
 async function main() {
-  const cacheEnableGasLimitedPaymasterAddress = '0x67A9Ed5F51d8Eb2ceA70075B0554a9c2F21E8708';
-  const gasLimitedPaymasterAddress = '0xA1c868aD7fae4159f07493df22E5004aaDb5467D';
-  const oneTimeUsePaymasterAddress = '0xF003a8C423691dCFB35Ac54e2fB6a7B1AE3185bf';
+  const cacheEnableGasLimitedPaymasterAddress = '0x84184bC6943789C7C6303630cd3e878B54d5c2f7';
+  const gasLimitedPaymasterAddress = '0x20f406AB21D2D8e998303e554546D868B6d36A60';
+  const oneTimeUsePaymasterAddress = '0xBd3d3f86b811B4c3b177891b5d1bdDA1Dbfd561a';
 
   const cacheEnableGasLimitedPaymaster = await hre.viem.getContractAt(
     'contracts/implementation/CacheEnabledGasLimitedPaymaster.sol:CacheEnabledGasLimitedPaymaster',
@@ -30,6 +29,22 @@ async function main() {
   );
   console.log(`GasLimitedPaymaster SCOPE : ${GAS_LIMITED_PAYMASTER_SCOPE}`);
   console.log(`OneTimeUSePaymaster SCOPE : ${ONE_TIME_USE_PAYMASTER_SCOPE}`);
+
+  // const [wallet1] = await hre.viem.getWalletClients();
+
+  // let currentIdentity = new Identity(await wallet1.signMessage({ message: `identity-1` }));
+  // await cacheEnableGasLimitedPaymaster.write.deposit([currentIdentity.commitment], {
+  //   value: await cacheEnableGasLimitedPaymaster.read.JOINING_AMOUNT(),
+  // });
+  // await new Promise((resolve) => setTimeout(resolve, 2000));
+  // await gasLimitedPaymaster.write.deposit([currentIdentity.commitment], {
+  //   value: await gasLimitedPaymaster.read.JOINING_AMOUNT(),
+  // });
+  // await new Promise((resolve) => setTimeout(resolve, 2000));
+  // await oneTimeUsePaymaster.write.deposit([currentIdentity.commitment], {
+  //   value: await oneTimeUsePaymaster.read.JOINING_AMOUNT(),
+  // });
+  // console.log(`Deposit Completed!!!`);
 }
 
 main().catch((err) => {

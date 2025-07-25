@@ -93,7 +93,7 @@ contract OneTimeUsePaymaster is BasePaymaster, PrepaidGasPool {
 
             // === Check merkleTreeDepth ===
             if (
-                (data.proof.merkleTreeDepth < MAX_TREE_DEPTH ||
+                (data.proof.merkleTreeDepth < MIN_TREE_DEPTH ||
                     data.proof.merkleTreeDepth > MAX_TREE_DEPTH) &&
                 isValidationMode
             ) {
