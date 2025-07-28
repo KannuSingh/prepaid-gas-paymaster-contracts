@@ -10,7 +10,6 @@ export interface PaymasterContract {
     currentTreeSize(): Promise<bigint>;
     totalDeposit(): Promise<bigint>;
     getDeposit(): Promise<bigint>;
-    nullifierGasUsage(args: [bigint]): Promise<bigint>;
   };
   write: {
     deposit(args: [bigint], options: { value: bigint }): Promise<Hash>;
@@ -21,6 +20,17 @@ export interface CacheEnabledGasLimitedPaymasterContract extends Omit<PaymasterC
   read: PaymasterContract['read'] & {
     userNullifiersStates(args: [Address]): Promise<bigint>;
     userNullifiers(args: [Hash]): Promise<bigint>;
+  };
+}
+export interface GasLimitedPaymasterContract extends Omit<PaymasterContract, 'read'> {
+  read: PaymasterContract['read'] & {
+    nullifierGasUsage(args: [bigint]): Promise<bigint>;
+  };
+}
+
+export interface OneTimeUsePaymasterContract extends Omit<PaymasterContract, 'read'> {
+  read: PaymasterContract['read'] & {
+    usedNullifiers(args: [bigint]): Promise<boolean>;
   };
 }
 

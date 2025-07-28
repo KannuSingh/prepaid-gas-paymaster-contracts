@@ -11,7 +11,7 @@ const PrepaidGasPaymastersModule = buildModule('PrepaidGasPaymastersModule', (m)
 
   const poseidonT3 = m.contractAt('PoseidonT3', POSEIDON_T3);
 
-  const joiningAmount = parseEther('0.001');
+  const joiningAmount = parseEther('0.0001');
   const cacheEnabledGasLimitedPaymaster = m.contract(
     'CacheEnabledGasLimitedPaymaster',
     [joiningAmount, entryPoint, semaphoreVerifier],
@@ -32,7 +32,7 @@ const PrepaidGasPaymastersModule = buildModule('PrepaidGasPaymastersModule', (m)
   );
   const oneTimeUsePaymaster = m.contract(
     'OneTimeUsePaymaster',
-    [parseEther('0.0001'), entryPoint, semaphoreVerifier],
+    [joiningAmount, entryPoint, semaphoreVerifier],
     {
       libraries: {
         PoseidonT3: poseidonT3,
