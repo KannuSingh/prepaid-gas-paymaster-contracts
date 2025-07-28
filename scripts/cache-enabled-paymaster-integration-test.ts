@@ -184,7 +184,7 @@ async function createZKStubData(
   const config = BigInt(currentRootIndex) | (BigInt(CONFIG.PAYMASTER_MODES.ESTIMATION) << 32n);
   const currentRoot = await paymaster.read.currentRoot();
   const configBytes = numberToHex(config, { size: 32 });
-  const scope = getScope(paymaster.address, BigInt(publicClient.chain!.id), CONFIG.JOINING_AMOUNT);
+  const scope = await paymaster.read.SCOPE(); // Read scope from contract
 
   const dummyProofBytes = encodeAbiParameters(
     [
@@ -257,7 +257,7 @@ async function createZKValidationData(
 
   const packedUserOp = getPackedUserOperation(userOp);
   const msgHash = getMessageHash(packedUserOp, BigInt(publicClient.chain!.id), entryPoint07Address);
-  const scope = getScope(paymaster.address, BigInt(publicClient.chain!.id), CONFIG.JOINING_AMOUNT);
+  const scope = await paymaster.read.SCOPE(); // Read scope from contract
   const currentRootIndex = await paymaster.read.currentRootIndex();
 
   const proofStartTime = Date.now();

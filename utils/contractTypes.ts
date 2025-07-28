@@ -8,27 +8,38 @@ export interface PaymasterContract {
     currentRootIndex(): Promise<number>;
     currentRoot(): Promise<bigint>;
     currentTreeSize(): Promise<bigint>;
+    currentTreeDepth(): Promise<bigint>;
     totalDeposit(): Promise<bigint>;
     getDeposit(): Promise<bigint>;
+    getRevenue(): Promise<bigint>;
+    SCOPE(): Promise<bigint>;
+    JOINING_AMOUNT(): Promise<bigint>;
+    dead(): Promise<boolean>;
+    roots(args: [bigint]): Promise<bigint>;
+    [key: string]: any; // Allow additional contract methods
   };
   write: {
     deposit(args: [bigint], options: { value: bigint }): Promise<Hash>;
+    [key: string]: any; // Allow additional contract methods
   };
+  [key: string]: any; // Allow additional properties
 }
 
-export interface CacheEnabledGasLimitedPaymasterContract extends Omit<PaymasterContract, 'read'> {
+export interface CacheEnabledGasLimitedPaymasterContract extends PaymasterContract {
   read: PaymasterContract['read'] & {
     userNullifiersStates(args: [Address]): Promise<bigint>;
     userNullifiers(args: [Hash]): Promise<bigint>;
+    nullifierGasUsage(args: [bigint]): Promise<bigint>;
   };
 }
-export interface GasLimitedPaymasterContract extends Omit<PaymasterContract, 'read'> {
+
+export interface GasLimitedPaymasterContract extends PaymasterContract {
   read: PaymasterContract['read'] & {
     nullifierGasUsage(args: [bigint]): Promise<bigint>;
   };
 }
 
-export interface OneTimeUsePaymasterContract extends Omit<PaymasterContract, 'read'> {
+export interface OneTimeUsePaymasterContract extends PaymasterContract {
   read: PaymasterContract['read'] & {
     usedNullifiers(args: [bigint]): Promise<boolean>;
   };

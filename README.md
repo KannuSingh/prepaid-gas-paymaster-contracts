@@ -17,8 +17,14 @@ npx hardhat compile
 # Deploy contracts
 npx hardhat ignition deploy ignition/modules/PrepaidGasPaymaster.ts --network dev
 
-# Run integration test
-npx hardhat run scripts/integration-test.ts --network dev
+# Run one-time-use paymaster integration test
+npx hardhat run scripts/one-time-use-paymaster-integration-test.ts --network dev
+
+# Run gas-limited paymaster integration test
+npx hardhat run scripts/gas-limited-integration-test.ts --network dev
+
+# Run cache-enabled gas limited paymaster-integration-test integration test
+npx hardhat run scripts/cache-enabled-paymaster-integration-test.ts --network dev
 ```
 
 ## Contract Types
@@ -51,8 +57,7 @@ The Docker Compose setup provides:
 ### Commands
 ```bash
 npx hardhat compile                    # Compile contracts
-npx hardhat test                       # Run tests
-npx hardhat run scripts/integration-test.ts --network dev  # E2E test
+
 ```
 
 ### Deployment
