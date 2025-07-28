@@ -42,6 +42,7 @@ library PrepaidGasLib {
                               Constants
     //////////////////////////////////////////////////////////////*/
     uint256 internal constant PAYMASTER_DATA_OFFSET = 52;
+    uint256 internal constant PAYMASTER_POSTOP_GAS_LIMIT_OFFSET = 36;
     uint256 internal constant MEMBERSHIP_PROOF_OFFSET =
         PAYMASTER_DATA_OFFSET + CONFIG_SIZE; // 84
     uint256 internal constant CONFIG_SIZE = 32;
@@ -91,6 +92,21 @@ library PrepaidGasLib {
     /// @notice Hash function compatible with SNARK scalar modulus
     function _hash(uint256 message) internal pure returns (uint256) {
         return uint256(keccak256(abi.encodePacked(message))) >> 8;
+    }
+
+    /// @notice Extract post-op gas limit from UserOperation paymasterAndData
+    /// @param paymasterAndData The paymasterAndData field from UserOperation
+    /// @return postOpGasLimit The post-op gas limit as uint128
+    function _extractPostOpGasLimit(
+        bytes calldata paymasterAndData
+    ) internal pure returns (uint128 postOpGasLimit) {
+        require(paymasterAndData.length >= 52, "PaymasterAndData too short");
+        
+        // Extract bytes 36-51 (16 bytes) and convert to uint128
+        bytes16 gasLimitBytes = bytes16(
+            paymasterAndData[PAYMASTER_POSTOP_GAS_LIMIT_OFFSET:PAYMASTER_POSTOP_GAS_LIMIT_OFFSET + 16]
+        );
+        postOpGasLimit = uint128(gasLimitBytes);
     }
 
     /// @notice Internal function to compute the message hash for a UserOperation.

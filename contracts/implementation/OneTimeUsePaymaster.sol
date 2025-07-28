@@ -34,6 +34,7 @@ contract OneTimeUsePaymaster is BasePaymaster, PrepaidGasPool {
     error MessageMismatch();
     error ProofVerificationFailed();
     error NullifierAlreadyUsed();
+    error InsufficientPostOpGasLimit();
 
     /*///////////////////////////////////////////////////////////////
                               STATE
@@ -70,6 +71,14 @@ contract OneTimeUsePaymaster is BasePaymaster, PrepaidGasPool {
             bool isValidationMode = data.config.mode ==
                 PrepaidGasLib.PaymasterMode.VALIDATION;
             address sender = userOp.getSender();
+
+            // === Check post-op gas limit ===
+            uint128 postOpGasLimit = PrepaidGasLib._extractPostOpGasLimit(
+                userOp.paymasterAndData
+            );
+            if (postOpGasLimit < Constants.POSTOP_GAS_COST && isValidationMode) {
+                revert InsufficientPostOpGasLimit();
+            }
 
             // This is the core "one-time use" logic.
             if (usedNullifiers[data.proof.nullifier] && isValidationMode) {

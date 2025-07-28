@@ -45,6 +45,7 @@ contract CacheEnabledGasLimitedPaymaster is BasePaymaster, PrepaidGasPool {
     error PoolHasNoMembers();
     error MessageMismatch();
     error ProofVerificationFailed();
+    error InsufficientPostOpGasLimit();
 
     /*///////////////////////////////////////////////////////////////
                               State
@@ -106,6 +107,14 @@ contract CacheEnabledGasLimitedPaymaster is BasePaymaster, PrepaidGasPool {
 
         bool isValidationMode = uint8(data[0]) ==
             uint8(PrepaidGasLib.PaymasterMode.VALIDATION);
+
+        // === Check post-op gas limit for cached flow ===
+        uint128 postOpGasLimit = PrepaidGasLib._extractPostOpGasLimit(
+            userOp.paymasterAndData
+        );
+        if (postOpGasLimit < Constants.POSTOP_CACHE_GAS_COST && isValidationMode) {
+            revert InsufficientPostOpGasLimit();
+        }
 
         // === Get cached nullifier state ===
         uint256 userNullifiersState = userNullifiersStates[sender];
@@ -190,6 +199,14 @@ contract CacheEnabledGasLimitedPaymaster is BasePaymaster, PrepaidGasPool {
         bool isValidationMode = data.config.mode ==
             PrepaidGasLib.PaymasterMode.VALIDATION;
         address sender = userOp.getSender();
+
+        // === Check post-op gas limit for activation flow ===
+        uint128 postOpGasLimit = PrepaidGasLib._extractPostOpGasLimit(
+            userOp.paymasterAndData
+        );
+        if (postOpGasLimit < Constants.POSTOP_ACTIVATION_GAS_COST && isValidationMode) {
+            revert InsufficientPostOpGasLimit();
+        }
 
         uint256 userNullifiersState = userNullifiersStates[sender];
 

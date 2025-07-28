@@ -33,6 +33,7 @@ contract GasLimitedPaymaster is BasePaymaster, PrepaidGasPool {
     error PoolHasNoMembers();
     error MessageMismatch();
     error ProofVerificationFailed();
+    error InsufficientPostOpGasLimit();
 
     /*///////////////////////////////////////////////////////////////
                               STATE
@@ -69,6 +70,14 @@ contract GasLimitedPaymaster is BasePaymaster, PrepaidGasPool {
             bool isValidationMode = data.config.mode ==
                 PrepaidGasLib.PaymasterMode.VALIDATION;
             address sender = userOp.getSender();
+
+            // === Check post-op gas limit ===
+            uint128 postOpGasLimit = PrepaidGasLib._extractPostOpGasLimit(
+                userOp.paymasterAndData
+            );
+            if (postOpGasLimit < Constants.POSTOP_GAS_COST && isValidationMode) {
+                revert InsufficientPostOpGasLimit();
+            }
 
             // === Check paymaster's deposit balance ===
             if (getDeposit() < maxCost && isValidationMode) {
